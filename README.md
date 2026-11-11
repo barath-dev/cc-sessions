@@ -11,6 +11,12 @@ each account in turn and shows the result together, grouped by project folder.
 It is a single small program with nothing else to install, for macOS, Linux and Windows.
 It is an unofficial tool and is not affiliated with Anthropic.
 
+## See it
+
+[![The Sessions view, with sessions from three accounts grouped by folder](docs/demo.png)](docs/demo.mp4)
+
+A 40-second tour of the page: [docs/demo.mp4](docs/demo.mp4). It uses made-up demo data.
+
 ## Install
 
 macOS and Linux:
