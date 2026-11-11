@@ -11,9 +11,32 @@ node docs/record-demo/record.mjs
 It needs Node 22 or later, Google Chrome, and ffmpeg with ffprobe (and libx264). Set
 `CHROME`, `FFMPEG` or `FFPROBE` if they are not in the usual place. It was written on macOS.
 
-The narration is spoken by macOS's built-in `say` command (the Samantha voice, or Daniel
-if that is not installed) and mixed into the video by the same run. On a system without
-`say` the script says so and makes the video without sound.
+## The voice
+
+The narration is spoken by Kokoro (the open-source Kokoro-82M neural voice, through the
+`kokoro-onnx` package), which runs on your own machine. Set it up once, from the repo root:
+
+```sh
+sh docs/record-demo/setup-voice.sh
+```
+
+It needs [uv](https://docs.astral.sh/uv/) and puts everything in `docs/record-demo/.tts/`,
+which git ignores: a Python environment, the half-precision model and the voices file,
+about 330 MB in all. Nothing is installed system-wide, running it again skips what is
+already there, and deleting that folder removes the voice. The voice is `af_heart` at its
+normal speed (`KOKORO` near the top of `record.mjs`). `speak.py` does the speaking and can be
+tried on its own: `docs/record-demo/.tts/venv/bin/python docs/record-demo/speak.py "Hello." hello.wav`.
+
+The script uses the first of these that is there, and says which:
+
+1. Kokoro, once `setup-voice.sh` has been run;
+2. macOS's built-in `say` command (the Samantha voice, or Daniel);
+3. no voice: the video is made without sound.
+
+Each spoken line has the silence around it trimmed and a short fade at both ends, and the
+finished track is levelled to about -16 LUFS with its true peak under -1.5 dB.
+
+## What it does
 
 The script builds a made-up home folder in `/tmp/alex` (three accounts, ten sessions,
 fifteen saved conversations), starts cc-sessions on it on port 47999 with the tests' fake
