@@ -1,0 +1,6 @@
+/target
+/dist
+# The earlier Python version, kept on disk but not published.
+/legacy-python
+__pycache__/
+.DS_Store

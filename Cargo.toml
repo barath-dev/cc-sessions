@@ -1,0 +1,44 @@
+[package]
+name = "cc-sessions"
+version = "2.0.0"
+edition = "2021"
+license = "MIT"
+description = "See, close and resume Claude Code sessions across every account on one machine."
+repository = "https://github.com/barath-dev/cc-sessions"
+
+[[bin]]
+name = "cc-sessions"
+path = "src/main.rs"
+
+# Stand-in for the real `claude` command, used only by the tests.
+[[bin]]
+name = "fake-claude"
+path = "tests/support/fake_claude.rs"
+test = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+memchr = "2"
+tiny_http = "0.12"
+getrandom = "0.3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

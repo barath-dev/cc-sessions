@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Unit and end-to-end tests
+        run: cargo test
+      - name: Build
+        run: cargo build --release --bin cc-sessions
+
+      # Install from a locally served build with the real installer, then start,
+      # use and stop the program the way a person would.
+      - name: Installer smoke test (macOS, Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          case "$(uname -s)" in Darwin) os=macos ;; *) os=linux ;; esac
+          case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; *) arch=x86_64 ;; esac
+          mkdir dist
+          cp target/release/cc-sessions "dist/cc-sessions-$os-$arch"
+          (cd dist && (sha256sum * 2>/dev/null || shasum -a 256 *) > checksums.txt)
+          python3 -m http.server 8765 --directory dist >/dev/null 2>&1 &
+          sleep 1
+          export HOME="$RUNNER_TEMP/home" SHELL=/bin/bash
+          mkdir -p "$HOME/.claude/projects"
+          CC_SESSIONS_INSTALL_BASE=http://127.0.0.1:8765 sh install.sh --yes --command cs-ci --port 47900
+          export PATH="$HOME/.local/bin:$PATH"
+          cs-ci --version
+          cs-ci account list
+          cs-ci --no-open
+          curl -fsS -o /dev/null http://127.0.0.1:47900/
+          cs-ci stop
+          # A second install keeps the settings and adds nothing twice.
+          CC_SESSIONS_INSTALL_BASE=http://127.0.0.1:8765 sh install.sh --yes
+          test "$(grep -c 'aliases.sh' "$HOME/.bashrc" "$HOME/.bash_profile" 2>/dev/null | awk -F: '{ n += $2 } END { print n }')" = 1
+          cs-ci --version
+
+      - name: Installer smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x86_64' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\cc-sessions.exe "dist\cc-sessions-windows-$arch.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 "dist\cc-sessions-windows-$arch.exe").Hash.ToLower()
+          Set-Content dist\checksums.txt "$hash  cc-sessions-windows-$arch.exe"
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--directory', 'dist' -PassThru -WindowStyle Hidden
+          Start-Sleep 2
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'localappdata'
+          $env:APPDATA = Join-Path $env:RUNNER_TEMP 'appdata'
+          $env:CC_SESSIONS_SKIP_PATH = '1'
+          $env:CC_SESSIONS_INSTALL_BASE = 'http://127.0.0.1:8765'
+          New-Item -ItemType Directory -Force $env:LOCALAPPDATA, $env:APPDATA | Out-Null
+          & ([scriptblock]::Create((Get-Content -Raw install.ps1))) --yes --command cs-ci --port 47900
+          $cs = Join-Path $env:LOCALAPPDATA 'cc-sessions\bin\cs-ci.cmd'
+          & $cs --version
+          & $cs account list
+          & $cs --no-open
+          Invoke-WebRequest -UseBasicParsing http://127.0.0.1:47900/ | Out-Null
+          & $cs stop
+          if ($LASTEXITCODE -ne 0) { throw 'stop failed' }
+          # A second install replaces the program and keeps the settings.
+          & ([scriptblock]::Create((Get-Content -Raw install.ps1))) --yes
+          & $cs --version
+          Stop-Process -Id $server.Id
+
+  # Not a gate: records how the real Claude Code behaves on each system, so
+  # differences from macOS show up here rather than on someone's machine.
+  claude-probe:
+    name: Claude Code probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code
+      - name: What cc-sessions relies on
+        shell: bash
+        run: |
+          set +e
+          echo "::group::claude --version"; claude --version; echo "exit $?"; echo "::endgroup::"
+          echo "::group::claude agents --json --all"; claude agents --json --all; echo "exit $?"; echo "::endgroup::"
+          echo "::group::claude auth status"; claude auth status; echo "exit $?"; echo "::endgroup::"
+          echo "::group::config folder"; ls -la "$HOME/.claude" 2>/dev/null; echo "::endgroup::"

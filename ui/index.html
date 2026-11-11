@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Claude Sessions</title>
+  <link rel="icon" href="/favicon.svg">
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <h1 class="brand">Claude Sessions</h1>
+    <nav class="tabs" aria-label="Views">
+      <button type="button" class="tab" data-tab="sessions">Sessions</button>
+      <button type="button" class="tab" data-tab="history">History</button>
+      <button type="button" class="tab" data-tab="accounts">Accounts</button>
+    </nav>
+    <div class="conn">
+      <select id="theme" class="theme" aria-label="Theme">
+        <option value="system">Match system</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+      <span class="conn-state" id="conn-state" data-state="connecting">Connecting</span>
+      <button type="button" class="btn" id="disconnect">Disconnect</button>
+    </div>
+  </header>
+
+  <main id="view" class="view"></main>
+
+  <section id="offline" class="offline" hidden>
+    <div class="offline-box">
+      <h2 id="offline-title">Disconnected</h2>
+      <p id="offline-text"></p>
+      <pre class="command" id="offline-command">cc-sessions</pre>
+      <p class="quiet" id="offline-note"></p>
+    </div>
+  </section>
+
+  <dialog id="dialog" class="dialog"></dialog>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>
