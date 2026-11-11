@@ -15,7 +15,7 @@ It is an unofficial tool and is not affiliated with Anthropic.
 
 [![The Sessions view, with sessions from three accounts grouped by folder](docs/demo.png)](docs/demo.mp4)
 
-A 40-second tour of the page: [docs/demo.mp4](docs/demo.mp4). It uses made-up demo data.
+A 48-second narrated tour of the page: [docs/demo.mp4](docs/demo.mp4). It uses made-up demo data.
 
 ## Install
 

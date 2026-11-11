@@ -1,15 +1,18 @@
-// Records the README demo: docs/demo.mp4 (a tour of the page) and docs/demo.png.
+// Records the README demo: docs/demo.mp4 (a narrated tour of the page) and docs/demo.png.
 //
 // It builds a made-up home folder with three accounts, starts cc-sessions on it
 // with the tests' fake `claude`, drives the page in headless Chrome, and encodes
 // what Chrome drew with ffmpeg. The real install is never touched: the tool runs
 // with its own HOME, CC_SESSIONS_HOME and port.
 //
+// The narration is spoken by macOS's `say`, one line per scene (NARRATION, next
+// to the tour). Where `say` is missing the video is made without sound.
+//
 //   cargo build --release
 //   node docs/record-demo/record.mjs [--keep]
 //
 // --keep leaves the demo home and the captured frames in place for a look.
-// CHROME and FFMPEG name the two programs if they are not in the usual place.
+// CHROME, FFMPEG, FFPROBE and SAY name the programs if they are not in the usual place.
 // DEMO_WORK_DIR is where the frames go while recording (about 500 MB; default
 // the system's temporary folder).
 
@@ -29,6 +32,8 @@ const EXE = path.join(REPO, 'target', 'release', 'cc-sessions');
 const FAKE_CLAUDE = path.join(REPO, 'target', 'release', 'fake-claude');
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
+const FFPROBE = process.env.FFPROBE || 'ffprobe';
+const SAY = process.env.SAY || 'say';
 const KEEP = process.argv.includes('--keep');
 
 // Short on purpose: the resume command in a session's details prints this path.
@@ -43,6 +48,11 @@ const PORT = 47999;
 const VIEW = { width: 1280, height: 800 };
 const SCALE = 2;
 const VIDEO = { width: 1600, height: 1000, fps: 30, crf: 20 };
+
+// The narration: the first of these voices that is installed, at a normal
+// speaking rate. Each line starts `lead` seconds into its scene, and the next
+// scene waits until at least `tail` seconds after the line has ended.
+const VOICE = { names: ['Samantha', 'Daniel'], wordsPerMinute: 175, lead: 0.3, tail: 0.4, bitrate: '96k' };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const log = (...words) => console.log(...words);
@@ -508,12 +518,28 @@ function actor(page) {
 const CLOSE_ME = 'Fix cart badge count on mobile';
 const LOOK_AT = 'Migrate checkout to the new payments API';
 
-async function tour(a, mark) {
-  mark('1 sessions');
+// What is said in each scene of the tour, in order, written the way it is to be
+// spoken ("C C sessions" is how the voice gets cc-sessions right). A scene is
+// held until its line has been said, so a longer line makes a longer scene.
+const NARRATION = [
+  'C C sessions shows every Claude Code session on this machine, across all your accounts, grouped by project folder.',
+  'Filter by status, or search by folder or name.',
+  'Open a session to see what it last did, and the command that reopens it.',
+  'Close a session from here. It stops, and its conversation is kept so you can resume it later.',
+  'History lists every saved conversation, with a preview of its prompts.',
+  'Accounts shows each login. Adding another account only takes a name.',
+  'There is a light and a dark theme.',
+  'Disconnect stops the server. Your Claude sessions keep running.',
+];
+
+// `scene` starts the next scene, once the one before has had time for its
+// narration. `scene.said()` waits here until this scene's line has been said.
+async function tour(a, scene) {
+  await scene('1 sessions');
   await a.caption('Claude Code sessions from every account, in one place.');
   await a.hold(3000);
 
-  mark('2 filter and search');
+  await scene('2 filter and search');
   await a.caption('Filter by status, or search by folder or name.');
   await a.click('#chips .chip', { text: 'Blocked' });
   await a.hold(1000);
@@ -525,13 +551,15 @@ async function tour(a, mark) {
   await a.erase('.search');
   await a.hold(300);
 
-  mark('3 details');
+  await scene('3 details');
   await a.caption('Open a session to see what it is doing.');
   await a.click('.row', { text: LOOK_AT, inside: '.row-name', dx: 150 });
   await a.hold(2500);
+  // The details stay open for as long as they are talked about.
+  await scene.said();
   await a.click('.row', { text: LOOK_AT, inside: '.row-name', dx: 150 });
 
-  mark('4 close');
+  await scene('4 close');
   await a.caption('Close a session. Its conversation is kept.');
   await a.click('.row', { text: CLOSE_ME, inside: '.row-actions .btn' });
   await a.hold(1100);
@@ -545,7 +573,7 @@ async function tour(a, mark) {
   await a.hold(1100);
   await a.click('#chips .chip', { text: 'Open' });
 
-  mark('5 history');
+  await scene('5 history');
   await a.caption('History keeps every saved conversation.');
   await a.click('.tab', { text: 'History' });
   await a.waitFor(`document.querySelectorAll('.row-history').length > 0`, 'the history list');
@@ -556,7 +584,7 @@ async function tour(a, mark) {
   await a.click('.row', { text: CLOSE_ME, inside: '.row-name', dx: 150 });
   await a.hold(2100);
 
-  mark('6 accounts');
+  await scene('6 accounts');
   await a.caption('Each account, with its login and plan.');
   await a.click('.tab', { text: 'Accounts' });
   await a.hold(1200);
@@ -571,20 +599,87 @@ async function tour(a, mark) {
   await a.moveTo('.account', { text: 'side-project', inside: '.warn', fx: 1.65, fy: 0.55 });
   await a.hold(1400);
 
-  mark('7 dark theme');
+  await scene('7 dark theme');
   await a.caption('Light or dark.');
   await a.choose('#theme', 'dark');
   await a.hold(700);
   await a.click('.tab', { text: 'Sessions' });
   await a.hold(1200);
 
-  mark('8 disconnect');
+  await scene('8 disconnect');
   await a.caption('Disconnect when you are done. Your sessions keep running.');
   await a.click('#disconnect');
   await a.hold(1000);
   await a.click('#dialog .btn-primary');
   await a.waitFor(`!document.querySelector('#offline').hidden`, 'the Disconnected screen');
   await a.hold(2100);
+  await scene.said();
+}
+
+// ----------------------------------------------------------------- narration
+
+// Speaks each line of NARRATION into a file and measures it. Returns the clips
+// in order, or null where there is no `say` (anything but macOS).
+function speak(dir) {
+  const voices = spawnSync(SAY, ['-v', '?'], { encoding: 'utf8' });
+  if (voices.error || voices.status !== 0) {
+    log(`No narration: the \`${SAY}\` command of macOS is not available here, so the video is made without sound.`);
+    return null;
+  }
+  const voice = VOICE.names.find((name) => new RegExp(`^${name}\\b`, 'm').test(voices.stdout));
+  if (!voice) log(`Neither ${VOICE.names.join(' nor ')} is installed; narrating with the system's default voice.`);
+
+  mkdirSync(dir, { recursive: true });
+  const clips = NARRATION.map((text, i) => {
+    const file = path.join(dir, `line${i + 1}.aiff`);
+    const said = spawnSync(SAY, [...(voice ? ['-v', voice] : []), '-r', String(VOICE.wordsPerMinute), '-o', file, text], { encoding: 'utf8' });
+    if (said.error || said.status !== 0) throw new Error(`${SAY} failed on line ${i + 1}: ${said.error?.message || said.stderr}`);
+    const probe = spawnSync(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', file], { encoding: 'utf8' });
+    const seconds = Number(probe.stdout);
+    if (probe.error || probe.status !== 0 || !(seconds > 0)) {
+      throw new Error(`Could not measure ${file} with ${FFPROBE}: ${probe.error?.message || probe.stderr || 'no duration'}`);
+    }
+    return { file, seconds };
+  });
+  log(`Narration: ${clips.length} lines by ${voice || 'the default voice'} at ${VOICE.wordsPerMinute} words a minute, ${clips.reduce((sum, c) => sum + c.seconds, 0).toFixed(1)}s of speech.`);
+  return clips;
+}
+
+// Keeps the time of the tour: where each scene starts in the video, and with
+// narration, when its line is said and how long the scene has to last for it.
+function timekeeper(clips) {
+  const scenes = [];
+  let began = 0;
+  const now = () => (Date.now() - began) / 1000;
+  // Waits until the current scene's line has been said, with its pause after.
+  const said = async () => {
+    const last = scenes.at(-1);
+    if (last) await sleep(Math.max(0, last.until - now()) * 1000);
+  };
+  // Called at the top of each scene.
+  const scene = async (name) => {
+    await said();
+    const at = now();
+    const clip = clips && clips[scenes.length];
+    if (clips && !clip) throw new Error(`NARRATION has no line for scene ${name}.`);
+    const speech = clip ? { file: clip.file, from: at + VOICE.lead, seconds: clip.seconds } : null;
+    scenes.push({ name, at, speech, until: speech ? speech.from + speech.seconds + VOICE.tail : at });
+  };
+  scene.said = said;
+  return {
+    scenes,
+    scene,
+    start() { began = Date.now(); },
+    // One line per scene: where it starts and, with narration, when its line is said.
+    table(end) {
+      const t = (seconds) => `${seconds.toFixed(2).padStart(6)}s`;
+      return scenes.map((s, i) => {
+        const next = i + 1 < scenes.length ? scenes[i + 1].at : end;
+        const said = s.speech ? `  said ${t(s.speech.from)} to ${t(s.speech.from + s.speech.seconds)} (${s.speech.seconds.toFixed(2)}s)` : '';
+        return `${t(s.at)}  ${s.name.padEnd(20)}${said}  next ${t(next)}`;
+      }).join('\n');
+    },
+  };
 }
 
 // ------------------------------------------------------------ capture, encode
@@ -622,14 +717,31 @@ async function record(page, framesDir, run) {
 // Frames arrive unevenly (none while nothing moves), so each video frame is the
 // latest one drawn by its time. ffmpeg's concat list would do the same, but it
 // rounds image durations to 1/25 s, which adds up over two thousand frames.
-async function encode({ frames, seconds }, target) {
+//
+// `speech` is the narration: each clip with the video time it starts at. The
+// clips are laid on one track at those times, which is padded or cut to the
+// exact length of the picture.
+async function encode({ frames, seconds }, speech, target) {
+  const count = Math.round(seconds * VIDEO.fps);
+  const sound = [];
+  if (speech.length) {
+    // Mixed at full level (normalize=0): the clips never overlap, so nothing needs turning down.
+    const delayed = speech.map((s, i) => `[${i + 1}:a]aresample=44100,adelay=${Math.round(s.from * 1000)}:all=1[s${i}]`);
+    const mix = `${speech.map((_, i) => `[s${i}]`).join('')}amix=inputs=${speech.length}:duration=longest:normalize=0`;
+    const length = (count / VIDEO.fps).toFixed(6);
+    sound.push('-filter_complex', `${delayed.join(';')};${mix},apad=whole_dur=${length},atrim=end=${length}[narration]`,
+      '-map', '0:v', '-map', '[narration]', '-c:a', 'aac', '-b:a', VOICE.bitrate, '-ac', '1');
+  } else {
+    sound.push('-an');
+  }
   const ffmpeg = spawn(FFMPEG, [
     '-hide_banner', '-loglevel', 'error', '-y',
     '-f', 'image2pipe', '-framerate', String(VIDEO.fps), '-c:v', 'mjpeg', '-i', '-',
+    ...speech.flatMap((s) => ['-i', s.file]),
     // Chrome's JPEGs are full-range BT.601; video players expect limited-range BT.709.
     '-vf', `scale=${VIDEO.width}:${VIDEO.height}:flags=lanczos:in_range=pc:out_range=tv:in_color_matrix=bt601:out_color_matrix=bt709,format=yuv420p`,
     '-colorspace', 'bt709', '-color_primaries', 'bt709', '-color_trc', 'bt709', '-color_range', 'tv',
-    '-c:v', 'libx264', '-preset', 'slow', '-crf', String(VIDEO.crf), '-movflags', '+faststart', '-an', target,
+    '-c:v', 'libx264', '-preset', 'slow', '-crf', String(VIDEO.crf), ...sound, '-movflags', '+faststart', target,
   ], { stdio: ['pipe', 'inherit', 'inherit'] });
   const done = new Promise((resolve, reject) => {
     ffmpeg.on('error', (err) => reject(new Error(`Could not run ${FFMPEG}: ${err.message}`)));
@@ -639,7 +751,7 @@ async function encode({ frames, seconds }, target) {
 
   let index = 0;
   let image = readFileSync(frames[0].file);
-  for (let n = 0; n < Math.round(seconds * VIDEO.fps); n++) {
+  for (let n = 0; n < count; n++) {
     let latest = index;
     while (latest + 1 < frames.length && frames[latest + 1].at <= n / VIDEO.fps) latest++;
     if (latest !== index) image = readFileSync(frames[index = latest].file);
@@ -661,6 +773,8 @@ async function main() {
   const work = mkdtempSync(path.join(process.env.DEMO_WORK_DIR || os.tmpdir(), 'cc-sessions-demo-'));
   let page;
   try {
+    // Spoken first: the stand-in sessions made next only live for two minutes.
+    const clips = speak(path.join(work, 'narration'));
     // A server left over from an earlier run would hold the port and the old data.
     if (existsSync(MARKER)) stopTool();
     resetHome();
@@ -690,16 +804,15 @@ async function main() {
     await metrics(SCALE);
     await a.start();
     await sleep(400);
-    const marks = [];
-    let began = 0;
+    const time = timekeeper(clips);
     const take = await record(page, path.join(work, 'frames'), () => {
-      began = Date.now();
-      return tour(a, (name) => marks.push(`${((Date.now() - began) / 1000).toFixed(1).padStart(5)}s  ${name}`));
+      time.start();
+      return tour(a, time.scene);
     });
-    log(`Recorded ${take.seconds.toFixed(1)}s in ${take.frames.length} frames. Scenes start at:\n${marks.join('\n')}`);
+    log(`Recorded ${take.seconds.toFixed(1)}s in ${take.frames.length} frames. Scenes start at:\n${time.table(take.seconds)}`);
     if (page.problems.length) log(`Page errors:\n${page.problems.join('\n')}`);
 
-    await encode(take, path.join(docs, 'demo.mp4'));
+    await encode(take, time.scenes.flatMap((s) => (s.speech ? [s.speech] : [])), path.join(docs, 'demo.mp4'));
     log(`Wrote docs/demo.mp4 (${(statSync(path.join(docs, 'demo.mp4')).size / 1e6).toFixed(2)} MB)`);
   } finally {
     if (page) await page.close();
