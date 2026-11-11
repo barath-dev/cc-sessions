@@ -201,6 +201,7 @@ impl App {
             "unregistered": accounts::unregistered_folders()?.iter().map(|p| tilde(p)).collect::<Vec<_>>(),
             "platform": {
                 "os": os::OS_NAME,
+                "command": accounts::load_config().command,
                 "aliasHint": os::alias_hint(),
                 "gracefulClose": os::GRACEFUL_CLOSE,
             },
@@ -417,7 +418,7 @@ fn handle(app: &App, mut request: Request) {
         return respond_json(request, 403, &json!({ "error": "Forbidden host." }));
     }
     if !same(&header(&request, "X-CC-Token"), &app.token) {
-        let error = "Missing or wrong token. Run cc-sessions to open the page.";
+        let error = format!("Missing or wrong token. Run {} to open the page.", accounts::load_config().command);
         return respond_json(request, 401, &json!({ "error": error }));
     }
     // Any authorised request means a page (or the command line) is using the server.

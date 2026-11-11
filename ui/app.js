@@ -177,6 +177,8 @@ function setOffline(reason) {
   $('#offline-title').textContent = title;
   $('#offline-text').textContent = text;
   $('#offline-note').textContent = note;
+  // Setup lets the command be renamed; show the one this machine uses.
+  $('#offline-command').textContent = store('cc-command') || 'cc-sessions';
   $('#offline').hidden = false;
   document.body.classList.add('is-offline');
   if ($('#dialog').open) $('#dialog').close();
@@ -269,6 +271,7 @@ async function refresh() {
   const accountsChanged = names(data) !== names(state.data);
   state.signature = signature;
   state.data = data;
+  if (data.platform && data.platform.command) store('cc-command', data.platform.command);
   // The account picker lives in the fixed toolbar, so rebuild it when accounts change.
   if (accountsChanged) mount();
   else render();

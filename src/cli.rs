@@ -110,6 +110,11 @@ pub fn main() -> i32 {
     }
 }
 
+/// What the person types to run this tool; setup lets them rename it.
+fn me() -> String {
+    accounts::load_config().command
+}
+
 fn fail(e: &Error) -> i32 {
     eprintln!("cc-sessions: {e}");
     1
@@ -238,7 +243,7 @@ fn cmd_open(args: &Args) -> Result<i32> {
         println!("Claude Sessions is already running.");
     } else {
         if port_busy() {
-            return err(format!("Port {port} is in use by another program. Stop it, or pick another port with: cc-sessions setup"));
+            return err(format!("Port {port} is in use by another program. Stop it, or pick another port with: {} setup", me()));
         }
         fs::create_dir_all(crate::store::state_dir())?;
         let log = fs::OpenOptions::new().create(true).append(true).open(server::log_file())?;
@@ -269,7 +274,7 @@ fn cmd_open(args: &Args) -> Result<i32> {
         }
     }
     println!("  {base}");
-    println!("  Stop it with Disconnect in the page, or: cc-sessions stop");
+    println!("  Stop it with Disconnect in the page, or: {} stop", me());
     Ok(0)
 }
 
@@ -479,14 +484,18 @@ fn account_list(args: &Args) -> Result<i32> {
     let removed = args.has("removed");
     let accounts: Vec<Account> = everyone.into_iter().filter(|a| a.removed == removed).collect();
     if accounts.is_empty() {
-        println!("{}", if removed { "No removed accounts." } else { "No accounts. Add one with: cc-sessions account add NAME" });
+        if removed {
+            println!("No removed accounts.");
+        } else {
+            println!("No accounts. Add one with: {} account add NAME", me());
+        }
         return Ok(0);
     }
     if removed {
         let mut rows = vec![vec!["NAME".to_string(), "ALIAS".into(), "FOLDER".into()]];
         rows.extend(accounts.iter().map(|a| vec![a.name.clone(), a.alias.clone().unwrap_or("-".into()), tilde(&a.dir)]));
         table(&rows, "");
-        println!("Their folders and logins are untouched. Bring one back with: cc-sessions account restore NAME");
+        println!("Their folders and logins are untouched. Bring one back with: {} account restore NAME", me());
         return Ok(0);
     }
     let infos: Vec<claude::AuthInfo> = thread::scope(|scope| {
@@ -511,7 +520,7 @@ fn account_list(args: &Args) -> Result<i32> {
     if !extra.is_empty() {
         println!("\nFolders not registered as accounts:");
         for path in extra {
-            println!("  {0}   (add with: cc-sessions account add NAME --dir {0})", tilde(&path));
+            println!("  {0}   (add with: {1} account add NAME --dir {0})", tilde(&path), me());
         }
     }
     Ok(0)
@@ -576,7 +585,7 @@ fn account_remove(args: &Args) -> Result<i32> {
     }
     accounts::remove_account(&acc.name)?;
     println!("Removed '{}'. Its folder {}, login and history are untouched.", acc.name, tilde(&acc.dir));
-    println!("Bring it back with: cc-sessions account restore {}", acc.name);
+    println!("Bring it back with: {} account restore {}", me(), acc.name);
     alias_note();
     Ok(0)
 }
