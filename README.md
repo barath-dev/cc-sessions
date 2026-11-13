@@ -37,7 +37,7 @@ them works:
 
 1. **Command name** — what you type to start it (default `cc-sessions`).
 2. **Port** for the page (default `4777`).
-3. **Clickable shortcut** in Applications or the Start menu (default no).
+3. **Clickable shortcut** in Applications or the Start menu (default yes).
 4. **Register the Claude Code folders it finds** as accounts (default yes).
 5. **Manage the `claude-<name>` shortcuts** that start each account (default yes). It shows
    the one line it would add to your shell's startup file, and keeps a backup.
@@ -145,6 +145,7 @@ In the settings folder above:
 | `config.json` | Answers from setup: command name, port, shortcut, idle limit. |
 | `accounts.json` | Account registry: name, folder, shortcut, removed flag. |
 | `aliases.sh` | Generated account shortcuts (macOS, Linux). |
+| `icon.png`, `icon.ico` | Icon of the clickable shortcut (Linux, Windows). |
 | `closed.json` | Sessions closed through the tool. |
 | `titles.json` | Names you gave to sessions. |
 | `history-cache.json` | Rebuildable index of saved conversations. |

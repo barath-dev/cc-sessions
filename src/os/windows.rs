@@ -322,11 +322,15 @@ pub fn install_shortcut(exe: &Path) -> Result<PathBuf> {
     if let Some(parent) = link.parent() {
         fs::create_dir_all(parent)?;
     }
+    let icon = store::state_file("icon.ico");
+    fs::create_dir_all(store::state_dir())?;
+    fs::write(&icon, include_bytes!("../../assets/icon.ico"))?;
     powershell(&format!(
         "$s = (New-Object -ComObject WScript.Shell).CreateShortcut({}); \
-         $s.TargetPath = {}; $s.Arguments = 'ui'; $s.WindowStyle = 7; $s.Save()",
+         $s.TargetPath = {}; $s.Arguments = 'ui'; $s.IconLocation = {}; $s.WindowStyle = 7; $s.Save()",
         ps_quote(&path_str(&link)),
-        ps_quote(&path_str(exe))
+        ps_quote(&path_str(exe)),
+        ps_quote(&path_str(&icon))
     ))?;
     Ok(link)
 }

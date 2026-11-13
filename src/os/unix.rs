@@ -354,6 +354,7 @@ pub fn install_shortcut(exe: &Path) -> Result<PathBuf> {
   <key>CFBundleName</key><string>Claude Sessions</string>
   <key>CFBundleIdentifier</key><string>dev.cc-sessions.launcher</string>
   <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>1</string>
   <key>LSUIElement</key><true/>
@@ -361,6 +362,9 @@ pub fn install_shortcut(exe: &Path) -> Result<PathBuf> {
 </plist>
 "#;
     fs::write(app.join("Contents").join("Info.plist"), plist)?;
+    let resources = app.join("Contents").join("Resources");
+    fs::create_dir_all(&resources)?;
+    fs::write(resources.join("icon.icns"), include_bytes!("../../assets/icon.icns"))?;
     let script = macos.join("launch");
     fs::write(&script, format!("#!/bin/sh\nexec {} ui\n", shell::sh_quote(&path_str(exe))))?;
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
@@ -372,9 +376,13 @@ pub fn install_shortcut(exe: &Path) -> Result<PathBuf> {
     let dir = home().join(".local").join("share").join("applications");
     fs::create_dir_all(&dir)?;
     let entry = dir.join("cc-sessions.desktop");
+    let icon = store::state_file("icon.png");
+    fs::create_dir_all(state_dir())?;
+    fs::write(&icon, include_bytes!("../../assets/icon.png"))?;
     let text = format!(
-        "[Desktop Entry]\nType=Application\nName=Claude Sessions\nComment=See, close and resume Claude Code sessions\nExec=\"{}\" ui\nTerminal=false\nCategories=Development;\n",
-        path_str(exe)
+        "[Desktop Entry]\nType=Application\nName=Claude Sessions\nComment=See, close and resume Claude Code sessions\nExec=\"{}\" ui\nIcon={}\nTerminal=false\nCategories=Development;\n",
+        path_str(exe),
+        path_str(&icon)
     );
     fs::write(&entry, text)?;
     fs::set_permissions(&entry, fs::Permissions::from_mode(0o755))?;
