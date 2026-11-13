@@ -59,16 +59,15 @@ running either way.
 
 ## The page
 
-- **Sessions** — live interactive sessions and all background sessions, grouped by folder,
-  refreshed every 5 seconds. Filter by account, status or text. Click a row for details.
-  **Close** stops a session and keeps its conversation; **Resume** reopens a closed one in
-  a new terminal window.
-- **History** — every saved conversation in every account, newest activity first, grouped
-  **By date** or **By folder**, with a preview of its prompts and a **Resume** button. A
-  conversation that published artifacts lists them with links to claude.ai; they open for
-  the Claude login that published them.
+- **Sessions** — every session in every account in one list: the ones open now first, then
+  saved conversations by when they were last active. The sidebar is a tree of the folders
+  they ran in; pick a folder to see only what is under it, and a dot marks folders with a
+  session open. Filter by account, status or text. Click a row for its prompts, artifacts
+  and details. **Close** stops a session and keeps its conversation; **Resume** reopens a
+  closed one in a new terminal window. A conversation that published artifacts lists them
+  with links to claude.ai; they open for the Claude login that published them.
 - **Rename**, on any session or conversation, gives it a name of your own. The name is
-  kept by cc-sessions and shown in both tabs and on the command line; Claude Code keeps
+  kept by cc-sessions and shown in the page and on the command line; Claude Code keeps
   its own title. Clear the name to go back to that title.
 - **Accounts** — login, plan, shortcut and folder of each account. Add, rename, change
   login, remove and restore.

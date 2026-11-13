@@ -10,7 +10,7 @@ const STATUS_HINTS = {
   done: 'Finished its task; not closed yet',
   closed: 'Stopped. The conversation is kept',
 };
-const SESSION_FILTERS = ['open', 'working', 'blocked', 'idle', 'done', 'closed', 'all'];
+const STATUS_FILTERS = ['all', 'open', 'working', 'blocked', 'idle', 'done', 'closed'];
 const POLL_MS = 5000;
 
 const $ = (selector) => document.querySelector(selector);
@@ -18,14 +18,13 @@ const $ = (selector) => document.querySelector(selector);
 const state = {
   tab: 'sessions',
   data: null,          // { accounts, sessions, unregistered }
-  history: null,       // [items]
+  history: null,       // [items], the saved conversations
   historyAt: 0,
   historyError: null,
   offlineAt: 0,
-  filters: {
-    sessions: { q: '', account: '', status: 'open' },
-    history: { q: '', account: '', group: store('cc-history-group') === 'folder' ? 'folder' : 'date' },
-  },
+  filters: { q: '', account: '', status: 'all' },
+  folder: store('cc-folder') || '',   // the folder picked in the sidebar; '' is all of them
+  collapsed: new Set(storedList('cc-collapsed')),
   expanded: new Set(),
   aliasNotice: false,
   offline: null,       // null | 'stopped' | 'disconnected' | 'token'
@@ -56,6 +55,15 @@ function store(key, value) {
   return null;
 }
 
+function storedList(key) {
+  try {
+    const list = JSON.parse(store(key) || '[]');
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
 function ago(ms) {
   if (!ms) return '';
   const seconds = Math.max(0, (Date.now() - ms) / 1000);
@@ -78,7 +86,7 @@ function recentDate(ms) {
   return Date.now() - ms < 7 * 86400000 ? ago(ms) : shortDate(ms);
 }
 
-// The heading a conversation falls under when history is grouped by date.
+// The heading a closed conversation falls under.
 function dateGroup(ms) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -120,11 +128,12 @@ function pathEl(path) {
     h('span', { class: 'path-leaf' }, path.slice(cut)));
 }
 
-function groupBy(items, key) {
+function groupBy(items, keyOf) {
   const groups = new Map();
   for (const item of items) {
-    if (!groups.has(item[key])) groups.set(item[key], []);
-    groups.get(item[key]).push(item);
+    const key = keyOf(item);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
   }
   return [...groups.entries()];
 }
@@ -305,7 +314,7 @@ async function loadHistory() {
   } catch (err) {
     state.historyError = err.message;
   }
-  if (state.tab === 'history') renderHistory();
+  if (state.tab === 'sessions') render();
 }
 
 async function act(run, done) {
@@ -332,20 +341,22 @@ function setTab(tab) {
   mount();
 }
 
-// Build the view's fixed parts (toolbar, containers) once, so typing in the
-// search box survives the list being redrawn underneath it.
+// Build the view's fixed parts (sidebar, toolbar, containers) once, so typing in
+// the search box survives the list being redrawn underneath it.
 function mount() {
   const view = $('#view');
+  view.classList.toggle('view-wide', state.tab === 'sessions');
   if (!state.data) {
     view.replaceChildren(h('p', { class: 'empty' }, 'Loading…'));
     return;
   }
   if (state.tab === 'sessions') {
-    view.replaceChildren(toolbar('sessions', 'Search folder or session name'),
-      h('div', { id: 'chips', class: 'chips' }), h('div', { id: 'notices' }), h('div', { id: 'list' }));
-  } else if (state.tab === 'history') {
-    view.replaceChildren(toolbar('history', 'Search folder, title or artifact'),
-      h('div', { id: 'notices' }), h('div', { id: 'list' }));
+    view.replaceChildren(h('div', { class: 'browser' },
+      h('nav', { id: 'side', class: 'side', 'aria-label': 'Folders' }),
+      h('div', { class: 'pane' },
+        h('header', { id: 'pane-head', class: 'pane-head' }),
+        toolbar(),
+        h('div', { id: 'chips', class: 'chips' }), h('div', { id: 'notices' }), h('div', { id: 'list' }))));
     if (!state.history || Date.now() - state.historyAt > 30000) loadHistory();
   } else {
     view.replaceChildren(h('div', { id: 'list' }));
@@ -357,31 +368,19 @@ function render() {
   if (!state.data) return;
   if (!$('#list')) return mount();
   if (state.tab === 'sessions') renderSessions();
-  else if (state.tab === 'history') renderHistory();
   else renderAccounts();
 }
 
-function toolbar(kind, placeholder) {
-  const filters = state.filters[kind];
-  const select = h('select', { 'aria-label': 'Account', onchange: (e) => { filters.account = e.target.value; render(); } },
-    h('option', { value: '' }, 'All accounts'),
-    activeAccounts().map((a) => h('option', { value: a.name, selected: a.name === filters.account }, a.name)));
+function toolbar() {
+  const filters = state.filters;
+  const placeholder = 'Search name, folder or artifact';
   return h('div', { class: 'toolbar' },
     h('input', { type: 'search', class: 'search', placeholder, 'aria-label': placeholder, value: filters.q,
       oninput: (e) => { filters.q = e.target.value; render(); } }),
-    select,
-    kind === 'history' && h('div', { class: 'segment', role: 'group', 'aria-label': 'Group by' },
-      [['date', 'By date'], ['folder', 'By folder']].map(([value, label]) =>
-        h('button', { type: 'button', class: 'chip', 'aria-pressed': String(filters.group === value), onclick: () => {
-          filters.group = value;
-          store('cc-history-group', value);
-          mount();
-        } }, label))),
-    kind === 'history' && h('button', { type: 'button', class: 'btn', onclick: () => {
-      state.history = null;
-      renderHistory();
-      loadHistory();
-    } }, 'Refresh'));
+    h('select', { 'aria-label': 'Account', onchange: (e) => { filters.account = e.target.value; render(); } },
+      h('option', { value: '' }, 'All accounts'),
+      activeAccounts().map((a) => h('option', { value: a.name, selected: a.name === filters.account }, a.name))),
+    h('button', { type: 'button', class: 'btn', onclick: () => { loadHistory(); refresh(); } }, 'Refresh'));
 }
 
 function toggle(key) {
@@ -430,26 +429,186 @@ async function renameSession({ account, sessionId, name, renamed }) {
 
 // -- sessions
 
-function visibleSessions() {
-  const { q, account } = state.filters.sessions;
-  const needle = q.trim().toLowerCase();
-  return state.data.sessions.filter((s) =>
-    (!account || s.account === account) &&
-    (!needle || `${s.cwd} ${s.name} ${s.id}`.toLowerCase().includes(needle)));
+// One entry per conversation: a session Claude Code reports, the saved
+// conversation behind it, or both when they are the same one.
+function allEntries() {
+  const saved = new Map((state.history || []).map((item) => [`${item.account}|${item.sessionId}`, item]));
+  const entries = state.data.sessions.map((s) => {
+    const id = `${s.account}|${s.sessionId}`;
+    const item = s.sessionId ? saved.get(id) : undefined;
+    saved.delete(id);
+    return entry(s, item);
+  });
+  for (const item of saved.values()) entries.push(entry(null, item));
+  return entries.sort((a, b) => b.at - a.at);
 }
 
-function inFilter(session, filter) {
+function entry(s, item) {
+  const cwd = (s && s.cwd) || (item && item.cwd) || '';
+  return {
+    key: s ? `s:${s.key}` : `h:${item.account}:${item.sessionId}`,
+    session: s,
+    item,
+    account: (s || item).account,
+    sessionId: (s || item).sessionId,
+    name: s ? s.name : item.title,
+    renamed: (s || item).renamed,
+    cwd,
+    folder: folderId(cwd),
+    status: s ? s.status : 'closed',
+    open: Boolean(s && s.open),
+    at: Math.max((s && (s.closedAt || s.updatedAt)) || 0, (item && item.lastActivity) || 0),
+    artifacts: (s && s.artifacts) || (item && item.artifacts) || [],
+  };
+}
+
+// A folder's place in the sidebar: its path with one kind of slash. '?' is no folder.
+function folderId(cwd) {
+  const parts = cwd.split(/[\\/]+/).filter(Boolean);
+  return parts.length ? `/${parts.join('/')}` : '?';
+}
+
+// The path to show for a folder. The server already shortens the home folder to ~.
+function folderPath(id) {
+  if (id === '?') return '';
+  return /^\/(~|[A-Za-z]:)/.test(id) ? id.slice(1) : id;
+}
+
+function inFolder(e, id) {
+  return !id || e.folder === id || e.folder.startsWith(`${id}/`);
+}
+
+// The folders as a tree. A folder that only leads to one other folder is folded
+// into it, so the tree starts where the paths part ways.
+function folderTree(entries) {
+  const root = { id: '', label: '', children: new Map(), own: [] };
+  const unknown = { id: '?', label: 'Unknown folder', kids: [], all: [] };
+  for (const e of entries) {
+    if (e.folder === '?') {
+      unknown.all.push(e);
+      continue;
+    }
+    let node = root;
+    for (const part of e.folder.slice(1).split('/')) {
+      if (!node.children.has(part)) {
+        node.children.set(part, { id: `${node.id}/${part}`, label: part, children: new Map(), own: [] });
+      }
+      node = node.children.get(part);
+    }
+    node.own.push(e);
+  }
+  let top = fold(root).kids;
+  while (top.length === 1 && !top[0].own.length && top[0].kids.length) top = top[0].kids;
+  for (const node of top) node.label = folderPath(node.id);
+  return unknown.all.length ? [...top, unknown] : top;
+}
+
+function fold(node) {
+  const kids = [...node.children.values()].map(fold)
+    .sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }));
+  if (node.id && !node.own.length && kids.length === 1) return { ...kids[0], label: `${node.label}/${kids[0].label}` };
+  return { id: node.id, label: node.label, own: node.own, kids, all: node.own.concat(...kids.map((kid) => kid.all)) };
+}
+
+function findFolder(nodes, id) {
+  for (const node of nodes) {
+    const hit = node.id === id ? node : findFolder(node.kids, id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function selectFolder(id) {
+  state.folder = id;
+  store('cc-folder', id);
+  render();
+}
+
+function renderSide(entries, tree) {
+  const rows = [];
+  const walk = (node, depth) => {
+    rows.push(sideRow(node, depth));
+    if (!state.collapsed.has(node.id)) for (const kid of node.kids) walk(kid, depth + 1);
+  };
+  for (const node of tree) walk(node, 0);
+  // Every folder that has folders inside it; one button closes or opens them all.
+  const parents = [];
+  const collect = (node) => {
+    if (node.kids.length) parents.push(node.id);
+    node.kids.forEach(collect);
+  };
+  tree.forEach(collect);
+  const allClosed = parents.every((id) => state.collapsed.has(id));
+  $('#side').replaceChildren(
+    sideRow({ id: '', label: 'All sessions', kids: [], all: entries }, 0),
+    h('div', { class: 'side-head' },
+      h('h2', { class: 'side-heading' }, 'Folders'),
+      parents.length > 0 && h('button', { type: 'button', class: 'side-all', onclick: () => {
+        state.collapsed = new Set(allClosed ? [] : parents);
+        store('cc-collapsed', JSON.stringify(parents.filter((id) => state.collapsed.has(id))));
+        render();
+      } }, allClosed ? 'Expand all' : 'Collapse all')),
+    ...rows);
+}
+
+function sideRow(node, depth) {
+  const open = node.all.filter((e) => e.open);
+  // The dot takes the colour of the most pressing open session in the folder.
+  const pressing = ['blocked', 'working'].find((status) => open.some((e) => e.status === status)) || 'idle';
+  const collapsed = state.collapsed.has(node.id);
+  const selected = state.folder === node.id;
+  return h('div', { class: `side-row${selected ? ' is-selected' : ''}`, style: { '--depth': String(depth) } },
+    node.kids.length
+      ? h('button', { type: 'button', class: 'side-twist', 'aria-expanded': String(!collapsed),
+        'aria-label': `${collapsed ? 'Show' : 'Hide'} the folders in ${node.label}`, onclick: () => {
+          if (collapsed) state.collapsed.delete(node.id);
+          else state.collapsed.add(node.id);
+          store('cc-collapsed', JSON.stringify([...state.collapsed]));
+          render();
+        } })
+      : h('span', { class: 'side-twist' }),
+    h('button', { type: 'button', class: 'side-item', 'aria-current': selected ? 'true' : null,
+      title: folderPath(node.id) || null, onclick: () => selectFolder(node.id) },
+      node.id && h('span', { class: 'side-icon' }),
+      h('span', { class: 'side-name' }, node.label),
+      open.length > 0 && h('span', { class: 'side-open', 'data-status': pressing, title: `${open.length} open` }),
+      h('span', { class: 'side-count' }, String(node.all.length))));
+}
+
+function inFilter(e, filter) {
   if (filter === 'all') return true;
-  if (filter === 'open') return session.open;
-  return session.status === filter;
+  if (filter === 'open') return e.open;
+  return e.status === filter;
 }
 
 function renderSessions() {
-  const filters = state.filters.sessions;
-  const visible = visibleSessions();
+  const filters = state.filters;
+  const all = allEntries().filter((e) => !filters.account || e.account === filters.account);
+  const tree = folderTree(all);
+  const node = state.folder ? findFolder(tree, state.folder) : null;
+  // A picked folder with nothing left in it falls back to everything, once the saved conversations are in.
+  if (state.folder && !node && state.history) {
+    state.folder = '';
+    store('cc-folder', '');
+  }
+  const scope = node ? all.filter((e) => inFolder(e, node.id)) : all;
+  renderSide(all, tree);
 
-  $('#chips').replaceChildren(...SESSION_FILTERS.map((filter) => {
-    const count = visible.filter((s) => inFilter(s, filter)).length;
+  const open = scope.filter((e) => e.open);
+  $('#pane-head').replaceChildren(...[
+    h('h2', {}, node ? pathEl(folderPath(node.id)) : 'All sessions'),
+    h('span', { class: 'count' }, `${plural(scope.length, 'session')}${open.length ? `, ${open.length} open` : ''}`),
+    node && open.length > 1 && h('button', { type: 'button', class: 'btn btn-small',
+      onclick: () => closeFolder(folderPath(node.id), open.map((e) => e.session)) }, 'Close all open here'),
+  ].filter(Boolean));
+
+  const needle = filters.q.trim().toLowerCase();
+  const visible = scope.filter((e) => !needle ||
+    `${e.cwd} ${e.name} ${e.item ? e.item.title : ''} ${e.sessionId} ${e.session ? e.session.id : ''} ${e.artifacts.map((a) => a.title).join(' ')}`
+      .toLowerCase().includes(needle));
+
+  $('#chips').replaceChildren(...STATUS_FILTERS.map((filter) => {
+    const count = visible.filter((e) => inFilter(e, filter)).length;
     const label = filter === 'open' ? 'Open' : filter === 'all' ? 'All' : STATUS_LABELS[filter];
     return h('button', { type: 'button', class: 'chip', 'aria-pressed': String(filters.status === filter),
       'data-status': filter, title: STATUS_HINTS[filter] || '',
@@ -457,67 +616,98 @@ function renderSessions() {
       label, h('span', { class: 'chip-count' }, String(count)));
   }));
 
-  $('#notices').replaceChildren(...activeAccounts().filter((a) => a.error).map((a) =>
-    h('p', { class: 'notice notice-error' }, `Could not read sessions for ${a.name}: ${a.error}`)));
+  $('#notices').replaceChildren(...[
+    ...activeAccounts().filter((a) => a.error).map((a) =>
+      h('p', { class: 'notice notice-error' }, `Could not read sessions for ${a.name}: ${a.error}`)),
+    state.historyError && h('p', { class: 'notice notice-error' }, `Could not read saved conversations: ${state.historyError}`),
+  ].filter(Boolean));
 
-  const shown = visible.filter((s) => inFilter(s, filters.status));
+  const reading = !state.history && !state.historyError;
+  const shown = visible.filter((e) => inFilter(e, filters.status));
   if (!shown.length) {
-    const nothing = state.data.sessions.length === 0;
-    $('#list').replaceChildren(h('p', { class: 'empty' }, nothing
-      ? 'No sessions yet. Start Claude Code in any folder and it shows up here.'
-      : 'No sessions match these filters.'));
+    $('#list').replaceChildren(h('p', { class: 'empty' }, reading ? 'Reading saved conversations…'
+      : all.length ? 'No sessions match these filters.'
+        : 'No sessions yet. Start Claude Code in any folder and it shows up here.'));
     return;
   }
 
-  const latest = (group) => Math.max(...group.map((s) => s.updatedAt || 0));
-  const groups = groupBy(shown, 'cwd').sort((a, b) => latest(b[1]) - latest(a[1]));
-  $('#list').replaceChildren(...groups.map(([cwd, sessions]) => {
-    const open = sessions.filter((s) => s.open);
-    return h('section', { class: 'group' },
+  // Open sessions first, finished background ones after them, then the rest by when it was last active.
+  const heading = (e) => (!e.open ? dateGroup(e.at) : e.status === 'done' ? 'Done, not closed' : 'Open now');
+  const rank = (e) => (!e.open ? 2 : e.status === 'done' ? 1 : 0);
+  const groups = groupBy([0, 1, 2].flatMap((n) => shown.filter((e) => rank(e) === n)), heading);
+  // Rows name their folder only when the list spans several, and then from the picked folder down.
+  const several = new Set(scope.map((e) => e.folder)).size > 1;
+  const folderOf = (e) => {
+    if (!several || (node && e.folder === node.id)) return '';
+    return node ? e.folder.slice(node.id.length + 1) : folderPath(e.folder);
+  };
+  const days = [...new Set(activeAccounts().map((a) => a.retentionDays))].sort((a, b) => a - b);
+  const span = days.length > 1 ? `${days[0]} to ${days[days.length - 1]}` : `${days[0] || 30}`;
+  $('#list').replaceChildren(
+    ...groups.map(([name, entries]) => h('section', { class: 'group' },
       h('header', { class: 'group-head' },
-        h('h2', {}, pathEl(cwd)),
-        open.length > 1 && h('button', { type: 'button', class: 'btn btn-small', onclick: () => closeFolder(cwd, open) },
-          'Close all in this folder')),
-      sessions.map(sessionRow));
-  }));
+        h('h2', { class: 'group-date' }, name),
+        h('span', { class: 'count' }, String(entries.length))),
+      entries.map((e) => entryRow(e, folderOf(e))))),
+    h('p', { class: 'quiet list-note' }, reading ? 'Reading saved conversations…'
+      : `Claude Code itself deletes conversations after ${span} days without activity ` +
+        '(its cleanupPeriodDays setting, shown per account under Accounts). Claude Sessions never deletes any.'));
 }
 
-function sessionRow(s) {
-  const key = `s:${s.key}`;
+function entryRow(e, folder) {
+  const key = `e:${e.key}`;
   const expanded = state.expanded.has(key);
-  return h('div', { class: `row${s.open ? '' : ' is-closed'}`, style: { '--acct': accountColor(s.account) } },
+  const { session: s, item } = e;
+  const sub = [
+    folder && pathEl(folder),
+    s && s.kind === 'background' && h('span', { class: 'row-tag' }, 'Background'),
+    item && h('span', { class: 'row-tag' }, plural(item.prompts, 'prompt')),
+    e.artifacts.length > 0 && h('span', { class: 'row-tag' }, plural(e.artifacts.length, 'artifact')),
+  ].filter(Boolean);
+  return h('div', { class: `row${e.open ? '' : ' is-closed'}`, style: { '--acct': accountColor(e.account) } },
     h('button', { type: 'button', class: 'row-main', 'aria-expanded': String(expanded), onclick: () => toggle(key) },
-      h('span', { class: 'row-name' }, s.name),
-      accountTag(s.account),
-      h('span', { class: 'row-kind' }, s.kind === 'interactive' ? 'Interactive' : 'Background'),
-      statusBadge(s.status),
-      h('span', { class: 'row-time', title: fullDate(s.updatedAt) }, ago(s.updatedAt))),
+      h('span', { class: 'row-title' },
+        h('span', { class: 'row-name' }, e.name),
+        sub.length > 0 && h('span', { class: 'row-sub' }, sub)),
+      accountTag(e.account),
+      !s && item.live
+        ? h('span', { class: 'status', 'data-status': 'working', title: 'This conversation is open right now' }, 'Live')
+        : statusBadge(e.status),
+      h('span', { class: 'row-time', title: fullDate(e.at) }, recentDate(e.at))),
     h('div', { class: 'row-actions' },
-      s.sessionId && h('button', { type: 'button', class: 'btn btn-small', onclick: () => renameSession(s) }, 'Rename'),
-      s.open
+      e.sessionId && h('button', { type: 'button', class: 'btn btn-small', onclick: () => renameSession(e) }, 'Rename'),
+      e.open
         ? h('button', { type: 'button', class: 'btn btn-small', onclick: () => closeOne(s) }, 'Close')
-        : h('button', { type: 'button', class: 'btn btn-small', onclick: () => resumeSession(s) }, 'Resume')),
-    expanded && sessionDetails(s));
+        : s
+          ? h('button', { type: 'button', class: 'btn btn-small', onclick: () => resumeSession(s) }, 'Resume')
+          : item.resumeCommand && h('button', { type: 'button', class: 'btn btn-small', onclick: () => resumeHistory(item) }, 'Resume')),
+    expanded && entryDetails(e));
 }
 
-function sessionDetails(s) {
-  const account = state.data.accounts.find((a) => a.name === s.account) || {};
-  const timeline = s.timeline.filter((t) => t.detail).reverse();
+function entryDetails(e) {
+  const { session: s, item } = e;
+  const account = state.data.accounts.find((a) => a.name === e.account) || {};
+  const timeline = s ? s.timeline.filter((t) => t.detail).reverse() : [];
+  const later = item ? item.lastPrompts.filter((p) => p !== item.firstPrompt) : [];
+  const command = (s && s.resumeCommand) || (item && item.resumeCommand);
   return details([
-    ['Account', `${s.account}${account.email ? ` (${account.email})` : ''}`],
-    ['Folder', s.cwd],
-    ['Started', fullDate(s.startedAt)],
-    [s.open ? 'Updated' : 'Closed', fullDate(s.closedAt || s.updatedAt)],
-    ['Last status', s.detail],
-    ['Session', s.sessionId],
-    ['Process', s.live && s.pid ? `pid ${s.pid}` : null],
+    ['Account', `${e.account}${account.email ? ` (${account.email})` : ''}`],
+    ['Folder', e.cwd],
+    ['Started', fullDate((s && s.startedAt) || (item && item.startedAt))],
+    [e.open ? 'Updated' : s ? 'Closed' : 'Last activity', fullDate(e.at)],
+    ['Last status', s && s.detail],
+    ['Session', e.sessionId],
+    ['Process', s && s.live && s.pid ? `pid ${s.pid}` : null],
   ], [
     timeline.length > 0 && h('div', { class: 'timeline' },
       h('h3', {}, 'Recent activity'),
       h('ol', {}, timeline.map((t) => h('li', {}, h('time', {}, ago(t.at)), h('span', {}, t.detail))))),
-    artifactList(s.artifacts),
-    h('h3', {}, s.kind === 'background' ? 'Open it in a terminal' : 'Resume it in a terminal'),
-    commandBlock(s.resumeCommand),
+    item && item.firstPrompt && [h('h3', {}, 'First prompt'), h('p', { class: 'prompt' }, item.firstPrompt)],
+    later.length > 0 && [h('h3', {}, 'Latest prompts'), later.map((p) => h('p', { class: 'prompt' }, p))],
+    artifactList(e.artifacts),
+    command
+      ? [h('h3', {}, s && s.kind === 'background' ? 'Open it in a terminal' : 'Resume it in a terminal'), commandBlock(command)]
+      : h('p', { class: 'quiet' }, 'This conversation has no folder recorded, so it cannot be resumed from here.'),
   ]);
 }
 
@@ -588,91 +778,6 @@ function reportClosed(results, sessions) {
 
 function resumeSession(s) {
   return act(() => api('/api/sessions/resume', { key: s.key }), (r) => `Opened ${s.name} in ${r.terminal}.`);
-}
-
-// -- history
-
-function renderHistory() {
-  if (state.tab !== 'history' || !$('#list')) return;
-  const days = [...new Set(activeAccounts().map((a) => a.retentionDays))].sort((a, b) => a - b);
-  const span = days.length > 1 ? `${days[0]} to ${days[days.length - 1]}` : `${days[0] || 30}`;
-  $('#notices').replaceChildren(h('p', { class: 'notice' },
-    `Claude Code itself deletes conversations after ${span} days without activity ` +
-    '(its cleanupPeriodDays setting, shown per account under Accounts). Claude Sessions never deletes any.'));
-
-  if (state.historyError) {
-    $('#list').replaceChildren(h('p', { class: 'empty' }, `Could not load history: ${state.historyError}`));
-    return;
-  }
-  if (!state.history) {
-    $('#list').replaceChildren(h('p', { class: 'empty' }, 'Reading saved conversations…'));
-    return;
-  }
-  const { q, account, group } = state.filters.history;
-  const needle = q.trim().toLowerCase();
-  const shown = state.history.filter((item) =>
-    (!account || item.account === account) &&
-    (!needle || `${item.cwd} ${item.title} ${item.id} ${item.artifacts.map((a) => a.title).join(' ')}`
-      .toLowerCase().includes(needle)));
-  if (!shown.length) {
-    $('#list').replaceChildren(h('p', { class: 'empty' }, state.history.length
-      ? 'No saved conversations match these filters.'
-      : 'No saved conversations yet.'));
-    return;
-  }
-  // Items arrive newest first, so either grouping comes out ordered by its latest conversation.
-  const byDate = group === 'date';
-  const groups = byDate
-    ? groupBy(shown.map((item) => ({ ...item, when: dateGroup(item.lastActivity) })), 'when')
-    : groupBy(shown, 'cwd');
-  $('#list').replaceChildren(
-    h('p', { class: 'count' }, `${plural(shown.length, 'conversation')} in ${plural(groupBy(shown, 'cwd').length, 'folder')}`),
-    ...groups.map(([name, items]) => h('section', { class: 'group' },
-      h('header', { class: 'group-head' },
-        byDate ? h('h2', { class: 'group-date' }, name) : h('h2', {}, pathEl(name)),
-        byDate && h('span', { class: 'count' }, String(items.length))),
-      items.map((item) => historyRow(item, byDate)))));
-}
-
-function historyRow(item, showFolder) {
-  const key = `h:${item.account}:${item.sessionId}`;
-  const expanded = state.expanded.has(key);
-  const artifacts = item.artifacts.length;
-  return h('div', { class: 'row row-history', style: { '--acct': accountColor(item.account) } },
-    h('button', { type: 'button', class: 'row-main', 'aria-expanded': String(expanded), onclick: () => toggle(key) },
-      h('span', { class: 'row-title' },
-        h('span', { class: 'row-name' }, item.title),
-        (showFolder || artifacts > 0) && h('span', { class: 'row-sub' },
-          showFolder && pathEl(item.cwd),
-          artifacts > 0 && h('span', { class: 'row-tag' }, plural(artifacts, 'artifact')))),
-      accountTag(item.account),
-      h('span', { class: 'row-kind' }, plural(item.prompts, 'prompt')),
-      item.live ? h('span', { class: 'status', 'data-status': 'working', title: 'This conversation is open right now' }, 'Live')
-        : h('span', {}),
-      h('span', { class: 'row-time', title: fullDate(item.lastActivity) }, recentDate(item.lastActivity))),
-    h('div', { class: 'row-actions' },
-      h('button', { type: 'button', class: 'btn btn-small',
-        onclick: () => renameSession({ ...item, name: item.title }) }, 'Rename'),
-      item.resumeCommand && h('button', { type: 'button', class: 'btn btn-small', onclick: () => resumeHistory(item) }, 'Resume')),
-    expanded && historyDetails(item));
-}
-
-function historyDetails(item) {
-  const later = item.lastPrompts.filter((p) => p !== item.firstPrompt);
-  return details([
-    ['Account', item.account],
-    ['Folder', item.cwd],
-    ['Started', fullDate(item.startedAt)],
-    ['Last activity', fullDate(item.lastActivity)],
-    ['Session', item.sessionId],
-  ], [
-    item.firstPrompt && [h('h3', {}, 'First prompt'), h('p', { class: 'prompt' }, item.firstPrompt)],
-    later.length > 0 && [h('h3', {}, 'Latest prompts'), later.map((p) => h('p', { class: 'prompt' }, p))],
-    artifactList(item.artifacts),
-    item.resumeCommand
-      ? [h('h3', {}, 'Resume it in a terminal'), commandBlock(item.resumeCommand)]
-      : h('p', { class: 'quiet' }, 'This conversation has no folder recorded, so it cannot be resumed from here.'),
-  ]);
 }
 
 function resumeHistory(item) {
@@ -848,7 +953,7 @@ themePicker.addEventListener('change', () => {
   store('cc-theme', theme);
 });
 
-setTab(['sessions', 'history', 'accounts'].includes(store('cc-tab')) ? store('cc-tab') : 'sessions');
+setTab(store('cc-tab') === 'accounts' ? 'accounts' : 'sessions');
 if (!token) setOffline('token');
 refresh();
 
@@ -857,7 +962,7 @@ setInterval(() => { if (!document.hidden) refresh(); }, POLL_MS);
 // is still an open page, so it checks in now and then without fetching anything.
 setInterval(() => { if (document.hidden && !state.offline) api('/api/ping').catch(() => {}); }, 5 * 60 * 1000);
 setInterval(() => {
-  if (!document.hidden && !state.offline && state.tab === 'history' && state.history) loadHistory();
+  if (!document.hidden && !state.offline && state.tab === 'sessions' && state.history) loadHistory();
 }, 60000);
 // Relative times drift even when nothing changes; redraw them once a minute.
 setInterval(() => { if (!document.hidden && !$('#dialog').open) render(); }, 60000);
