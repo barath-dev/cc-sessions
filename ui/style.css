@@ -189,6 +189,7 @@ code, pre { font-family: var(--mono); font-size: 0.87em; }
 .chip:hover { color: var(--ink); border-color: var(--muted); }
 .chip[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--ground); }
 .chip-count { font-weight: 600; }
+.segment { display: inline-flex; gap: 0.3rem; }
 
 .count, .quiet { color: var(--muted); font-size: 0.9rem; }
 .warn { color: var(--warn); font-weight: 500; }
@@ -213,6 +214,7 @@ code, pre { font-family: var(--mono); font-size: 0.87em; }
 
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; min-height: 2rem; margin-bottom: 0.35rem; }
 .group-head h2 { min-width: 0; font-size: 1em; font-weight: 400; }
+.group-head .group-date { font-weight: 700; }
 
 /* The folder is what you scan for: parents recede, the last segment carries the weight. */
 .path { font-family: var(--mono); font-size: 0.87rem; overflow-wrap: anywhere; }
@@ -249,7 +251,14 @@ code, pre { font-family: var(--mono); font-size: 0.87em; }
 .row-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-kind, .row-time { color: var(--muted); font-size: 0.9rem; white-space: nowrap; }
 .row-time { text-align: right; }
-.row-actions { padding: 0 0.75rem 0 0.4rem; min-width: 5.2rem; text-align: right; }
+.row-actions { display: flex; justify-content: flex-end; gap: 0.4rem; padding: 0 0.75rem 0 0.4rem; min-width: 5.2rem; }
+
+/* A history row's name, with its folder and artifact count underneath when there is one. */
+.row-title { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+.row-sub { display: flex; align-items: baseline; gap: 0.75rem; min-width: 0; color: var(--muted); font-size: 0.87rem; }
+.row-sub .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8rem; }
+.row-sub .path-leaf { font-weight: 600; }
+.row-tag { white-space: nowrap; }
 
 .is-closed .row-name { color: var(--muted); font-weight: 400; }
 
@@ -286,6 +295,11 @@ code, pre { font-family: var(--mono); font-size: 0.87em; }
 
 .timeline li { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr); gap: 0.75rem; font-size: 0.93rem; padding: 0.12rem 0; }
 .timeline time { color: var(--muted); }
+
+.artifacts { margin-bottom: 0.35rem; }
+.artifacts li { display: flex; align-items: baseline; gap: 0.75rem; padding: 0.12rem 0; font-size: 0.93rem; }
+.artifacts a { color: var(--accent); text-underline-offset: 3px; overflow-wrap: anywhere; }
+.artifacts time { color: var(--muted); white-space: nowrap; }
 
 .prompt { max-width: 44rem; margin-bottom: 0.4rem; padding-left: 0.75rem; border-left: 2px solid var(--line); font-size: 0.93rem; overflow-wrap: anywhere; }
 
@@ -387,7 +401,8 @@ code, pre { font-family: var(--mono); font-size: 0.87em; }
   .toolbar { flex-wrap: wrap; }
   .search { flex-basis: 100%; max-width: none; }
   .row-main { display: flex; flex-wrap: wrap; gap: 0.15rem 0.9rem; }
-  .row-name { flex-basis: 100%; white-space: normal; }
+  .row-name, .row-title { flex-basis: 100%; white-space: normal; }
+  .row-sub { flex-wrap: wrap; }
   .row-time { text-align: left; }
   .group-head { flex-wrap: wrap; }
   .accounts { grid-template-columns: 1fr; }

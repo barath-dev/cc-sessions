@@ -22,7 +22,10 @@ const state = {
   historyAt: 0,
   historyError: null,
   offlineAt: 0,
-  filters: { sessions: { q: '', account: '', status: 'open' }, history: { q: '', account: '' } },
+  filters: {
+    sessions: { q: '', account: '', status: 'open' },
+    history: { q: '', account: '', group: store('cc-history-group') === 'folder' ? 'folder' : 'date' },
+  },
   expanded: new Set(),
   aliasNotice: false,
   offline: null,       // null | 'stopped' | 'disconnected' | 'token'
@@ -68,6 +71,23 @@ function fullDate(ms) {
 
 function shortDate(ms) {
   return ms ? new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+}
+
+// Recent things read better as "3h ago"; older ones as a date.
+function recentDate(ms) {
+  return Date.now() - ms < 7 * 86400000 ? ago(ms) : shortDate(ms);
+}
+
+// The heading a conversation falls under when history is grouped by date.
+function dateGroup(ms) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const days = Math.ceil((today - ms) / 86400000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return 'Last 7 days';
+  if (days < 30) return 'Last 30 days';
+  return new Date(ms).toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 }
 
 function plural(n, word) {
@@ -324,7 +344,7 @@ function mount() {
     view.replaceChildren(toolbar('sessions', 'Search folder or session name'),
       h('div', { id: 'chips', class: 'chips' }), h('div', { id: 'notices' }), h('div', { id: 'list' }));
   } else if (state.tab === 'history') {
-    view.replaceChildren(toolbar('history', 'Search folder or title'),
+    view.replaceChildren(toolbar('history', 'Search folder, title or artifact'),
       h('div', { id: 'notices' }), h('div', { id: 'list' }));
     if (!state.history || Date.now() - state.historyAt > 30000) loadHistory();
   } else {
@@ -350,6 +370,13 @@ function toolbar(kind, placeholder) {
     h('input', { type: 'search', class: 'search', placeholder, 'aria-label': placeholder, value: filters.q,
       oninput: (e) => { filters.q = e.target.value; render(); } }),
     select,
+    kind === 'history' && h('div', { class: 'segment', role: 'group', 'aria-label': 'Group by' },
+      [['date', 'By date'], ['folder', 'By folder']].map(([value, label]) =>
+        h('button', { type: 'button', class: 'chip', 'aria-pressed': String(filters.group === value), onclick: () => {
+          filters.group = value;
+          store('cc-history-group', value);
+          mount();
+        } }, label))),
     kind === 'history' && h('button', { type: 'button', class: 'btn', onclick: () => {
       state.history = null;
       renderHistory();
@@ -368,6 +395,37 @@ function details(pairs, extra = []) {
     h('dl', { class: 'facts' }, pairs.filter(([, value]) => value).map(([label, value]) =>
       [h('dt', {}, label), h('dd', {}, value)])),
     extra);
+}
+
+function artifactList(artifacts) {
+  if (!artifacts || !artifacts.length) return null;
+  return [h('h3', {}, 'Artifacts'),
+    h('ul', { class: 'artifacts' }, artifacts.map((a) => h('li', {},
+      h('a', { href: a.url, target: '_blank', rel: 'noopener noreferrer' }, a.title),
+      h('time', { title: fullDate(a.updatedAt) }, ago(a.updatedAt))))),
+    h('p', { class: 'quiet' }, 'They open on claude.ai, for the Claude login that published them.')];
+}
+
+async function renameSession({ account, sessionId, name, renamed }) {
+  const title = field('Name', 'title', name, renamed
+    ? 'Shown in Claude Sessions only. Clear it to go back to Claude Code\'s own title.'
+    : 'Shown in Claude Sessions only. Claude Code keeps its own title.');
+  const input = title.querySelector('input');
+  const saved = await showDialog({
+    title: 'Rename session',
+    body: [title],
+    confirmLabel: 'Save name',
+    onConfirm: () => {
+      const value = input.value.trim();
+      // Saving Claude Code's own title back would pin it; leave it to follow along.
+      if (value === name || (!value && !renamed)) return false;
+      return api('/api/sessions/rename', { account, sessionId, title: value });
+    },
+  });
+  if (!saved) return;
+  toast(saved.title ? `Renamed to ${saved.title}.` : 'Back to Claude Code\'s own title.');
+  if (state.history) loadHistory();
+  refresh();
 }
 
 // -- sessions
@@ -434,9 +492,11 @@ function sessionRow(s) {
       h('span', { class: 'row-kind' }, s.kind === 'interactive' ? 'Interactive' : 'Background'),
       statusBadge(s.status),
       h('span', { class: 'row-time', title: fullDate(s.updatedAt) }, ago(s.updatedAt))),
-    h('div', { class: 'row-actions' }, s.open
-      ? h('button', { type: 'button', class: 'btn btn-small', onclick: () => closeOne(s) }, 'Close')
-      : h('button', { type: 'button', class: 'btn btn-small', onclick: () => resumeSession(s) }, 'Resume')),
+    h('div', { class: 'row-actions' },
+      s.sessionId && h('button', { type: 'button', class: 'btn btn-small', onclick: () => renameSession(s) }, 'Rename'),
+      s.open
+        ? h('button', { type: 'button', class: 'btn btn-small', onclick: () => closeOne(s) }, 'Close')
+        : h('button', { type: 'button', class: 'btn btn-small', onclick: () => resumeSession(s) }, 'Resume')),
     expanded && sessionDetails(s));
 }
 
@@ -455,6 +515,7 @@ function sessionDetails(s) {
     timeline.length > 0 && h('div', { class: 'timeline' },
       h('h3', {}, 'Recent activity'),
       h('ol', {}, timeline.map((t) => h('li', {}, h('time', {}, ago(t.at)), h('span', {}, t.detail))))),
+    artifactList(s.artifacts),
     h('h3', {}, s.kind === 'background' ? 'Open it in a terminal' : 'Resume it in a terminal'),
     commandBlock(s.resumeCommand),
   ]);
@@ -547,37 +608,51 @@ function renderHistory() {
     $('#list').replaceChildren(h('p', { class: 'empty' }, 'Reading saved conversations…'));
     return;
   }
-  const { q, account } = state.filters.history;
+  const { q, account, group } = state.filters.history;
   const needle = q.trim().toLowerCase();
   const shown = state.history.filter((item) =>
     (!account || item.account === account) &&
-    (!needle || `${item.cwd} ${item.title} ${item.id}`.toLowerCase().includes(needle)));
+    (!needle || `${item.cwd} ${item.title} ${item.id} ${item.artifacts.map((a) => a.title).join(' ')}`
+      .toLowerCase().includes(needle)));
   if (!shown.length) {
     $('#list').replaceChildren(h('p', { class: 'empty' }, state.history.length
       ? 'No saved conversations match these filters.'
       : 'No saved conversations yet.'));
     return;
   }
-  // Items arrive newest first, so groups come out ordered by their latest conversation.
+  // Items arrive newest first, so either grouping comes out ordered by its latest conversation.
+  const byDate = group === 'date';
+  const groups = byDate
+    ? groupBy(shown.map((item) => ({ ...item, when: dateGroup(item.lastActivity) })), 'when')
+    : groupBy(shown, 'cwd');
   $('#list').replaceChildren(
     h('p', { class: 'count' }, `${plural(shown.length, 'conversation')} in ${plural(groupBy(shown, 'cwd').length, 'folder')}`),
-    ...groupBy(shown, 'cwd').map(([cwd, items]) => h('section', { class: 'group' },
-      h('header', { class: 'group-head' }, h('h2', {}, pathEl(cwd))),
-      items.map(historyRow))));
+    ...groups.map(([name, items]) => h('section', { class: 'group' },
+      h('header', { class: 'group-head' },
+        byDate ? h('h2', { class: 'group-date' }, name) : h('h2', {}, pathEl(name)),
+        byDate && h('span', { class: 'count' }, String(items.length))),
+      items.map((item) => historyRow(item, byDate)))));
 }
 
-function historyRow(item) {
+function historyRow(item, showFolder) {
   const key = `h:${item.account}:${item.sessionId}`;
   const expanded = state.expanded.has(key);
+  const artifacts = item.artifacts.length;
   return h('div', { class: 'row row-history', style: { '--acct': accountColor(item.account) } },
     h('button', { type: 'button', class: 'row-main', 'aria-expanded': String(expanded), onclick: () => toggle(key) },
-      h('span', { class: 'row-name' }, item.title),
+      h('span', { class: 'row-title' },
+        h('span', { class: 'row-name' }, item.title),
+        (showFolder || artifacts > 0) && h('span', { class: 'row-sub' },
+          showFolder && pathEl(item.cwd),
+          artifacts > 0 && h('span', { class: 'row-tag' }, plural(artifacts, 'artifact')))),
       accountTag(item.account),
       h('span', { class: 'row-kind' }, plural(item.prompts, 'prompt')),
       item.live ? h('span', { class: 'status', 'data-status': 'working', title: 'This conversation is open right now' }, 'Live')
         : h('span', {}),
-      h('span', { class: 'row-time', title: fullDate(item.lastActivity) }, shortDate(item.lastActivity))),
+      h('span', { class: 'row-time', title: fullDate(item.lastActivity) }, recentDate(item.lastActivity))),
     h('div', { class: 'row-actions' },
+      h('button', { type: 'button', class: 'btn btn-small',
+        onclick: () => renameSession({ ...item, name: item.title }) }, 'Rename'),
       item.resumeCommand && h('button', { type: 'button', class: 'btn btn-small', onclick: () => resumeHistory(item) }, 'Resume')),
     expanded && historyDetails(item));
 }
@@ -593,6 +668,7 @@ function historyDetails(item) {
   ], [
     item.firstPrompt && [h('h3', {}, 'First prompt'), h('p', { class: 'prompt' }, item.firstPrompt)],
     later.length > 0 && [h('h3', {}, 'Latest prompts'), later.map((p) => h('p', { class: 'prompt' }, p))],
+    artifactList(item.artifacts),
     item.resumeCommand
       ? [h('h3', {}, 'Resume it in a terminal'), commandBlock(item.resumeCommand)]
       : h('p', { class: 'quiet' }, 'This conversation has no folder recorded, so it cannot be resumed from here.'),

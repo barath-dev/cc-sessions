@@ -431,6 +431,7 @@ fn history_lists_saved_conversations() {
         r#"{"type":"user","cwd":"/work/app","timestamp":"2026-11-10T06:20:00.000Z","message":{"role":"user","content":"fix the login bug"}}"#,
         r#"{"type":"ai-title","aiTitle":"Login bug fix","sessionId":"x"}"#,
         r#"{"type":"user","message":{"role":"user","content":"now add a test"}}"#,
+        r#"{"type":"frame-link","sessionId":"x","path":"/tmp/report.html","frameUrl":"https://claude.ai/artifact/AbCd1234","title":"Login report","artifactCount":1,"timestamp":"2026-11-10T06:25:00.000Z"}"#,
     ];
     fs::write(project.join("11112222-3333-4444-5555-666677778888.jsonl"), transcript.join("\n")).unwrap();
     fs::write(project.join("subagents").join("agent-1.jsonl"), transcript.join("\n")).unwrap();
@@ -444,8 +445,62 @@ fn history_lists_saved_conversations() {
     assert_eq!(items[0]["cwd"], "/work/app");
     assert_eq!(items[0]["prompts"], 2);
     assert_eq!(items[0]["firstPrompt"], "fix the login bug");
+    assert_eq!(items[0]["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(items[0]["artifacts"][0]["url"], "https://claude.ai/artifact/AbCd1234");
+    assert_eq!(items[0]["artifacts"][0]["title"], "Login report");
     // Second run comes from the cache and says the same.
-    assert_eq!(m.json(&["history", "--json"]).as_array().unwrap()[0]["title"], "Login bug fix");
+    let again = m.json(&["history", "--json"]);
+    assert_eq!(again[0]["title"], "Login bug fix");
+    assert_eq!(again[0]["artifacts"][0]["title"], "Login report");
+
+    let by_date = text(&m.run(&["history", "--by-date"]));
+    assert!(by_date.contains("1 artifact") && by_date.contains("/work/app") && by_date.contains("Login bug fix"), "{by_date}");
+}
+
+#[test]
+fn rename_is_kept_outside_account_folders() {
+    let mut m = Machine::new("rename", 47811);
+    let project = m.account("work").join("projects").join("-work-app");
+    fs::create_dir_all(&project).unwrap();
+    let session_id = "aaaa0002-3333-4444-5555-666677778888";
+    let transcript = [
+        r#"{"type":"user","cwd":"/work/app","timestamp":"2026-11-10T06:20:00.000Z","message":{"role":"user","content":"fix the login bug"}}"#,
+        r#"{"type":"ai-title","aiTitle":"Login bug fix","sessionId":"x"}"#,
+    ];
+    fs::write(project.join(format!("{session_id}.jsonl")), transcript.join("\n")).unwrap();
+    let mut job = background("aaaa0002", "done", None);
+    job["sessionId"] = json!(session_id);
+    m.agents("work", json!([job]));
+    m.seal();
+
+    let title = |m: &Machine| m.json(&["history", "--json"])[0]["title"].clone();
+    let renamed = m.run(&["rename", "work:aaaa0002", "Auth", "  rework "]);
+    assert!(renamed.status.success(), "{}", text(&renamed));
+    assert_eq!(title(&m), "Auth rework");
+    assert_eq!(m.json(&["history", "--json"])[0]["renamed"], true);
+    // The session it belongs to goes by the same name.
+    assert_eq!(find(&m.json(&["list", "--all", "--json"]), "aaaa0002")["name"], "Auth rework");
+
+    assert!(!m.run(&["rename", "work:aaaa0002"]).status.success(), "a rename needs a name or --reset");
+    assert!(!m.run(&["rename", "work:ffff9999", "x"]).status.success(), "no such session");
+    assert!(m.run(&["rename", "work:aaaa0002", "--reset"]).status.success());
+    assert_eq!(title(&m), "Login bug fix");
+    assert_eq!(find(&m.json(&["list", "--all", "--json"]), "aaaa0002")["name"], "job aaaa0002");
+
+    // The page renames through the server.
+    assert!(m.run(&["--no-open"]).status.success());
+    let token = m.token();
+    let json = "Content-Type: application/json\r\n";
+    let body = json!({ "account": "work", "sessionId": session_id, "title": "From the page" }).to_string();
+    assert_eq!(m.post("/api/sessions/rename", &token, json, &body).0, 200);
+    assert_eq!(title(&m), "From the page");
+    let (_, state) = m.get("/api/state", Some(&token), None);
+    assert!(state.contains("From the page"), "the session list shows the new name: {state}");
+    let unknown = json!({ "account": "work", "sessionId": "nope", "title": "x" }).to_string();
+    assert_eq!(m.post("/api/sessions/rename", &token, json, &unknown).0, 400);
+    let reset = json!({ "account": "work", "sessionId": session_id, "title": "" }).to_string();
+    assert_eq!(m.post("/api/sessions/rename", &token, json, &reset).0, 200);
+    assert_eq!(title(&m), "Login bug fix");
 }
 
 #[test]

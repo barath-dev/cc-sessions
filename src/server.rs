@@ -19,11 +19,12 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::accounts::{self, Account};
 use crate::claude::{self, AuthInfo};
 use crate::closing;
-use crate::history;
+use crate::history::{self, Artifact};
 use crate::os;
 use crate::resume::{self, Target};
 use crate::sessions::{self, Session};
 use crate::store::{state_dir, state_file};
+use crate::titles;
 use crate::util::{err, log_stamp, now_ms, tilde, Error, Result};
 
 pub const HOST: &str = "127.0.0.1";
@@ -143,7 +144,16 @@ impl App {
                 return Ok(data.clone());
             }
         }
-        let data: Listing = Arc::new(sessions::all_sessions(&accounts)?);
+        let (mut found, notices) = sessions::all_sessions(&accounts)?;
+        // Artifacts are an extra read from the saved conversations; the listing stands without them.
+        if let Ok(items) = history::history_items() {
+            for sess in found.iter_mut().filter(|s| !s.session_id.is_empty()) {
+                if let Some(item) = items.iter().find(|i| i.account == sess.account && i.session_id == sess.session_id) {
+                    sess.artifacts = item.artifacts.clone();
+                }
+            }
+        }
+        let data: Listing = Arc::new((found, notices));
         cache.fingerprint = sessions::fingerprint(&accounts, &data.0);
         cache.at = Instant::now();
         cache.data = Some(data.clone());
@@ -223,6 +233,8 @@ impl App {
                     "id": item.id,
                     "sessionId": item.session_id,
                     "title": item.title,
+                    "renamed": item.renamed,
+                    "artifacts": links(&item.artifacts),
                     "cwd": tilde(&item.folder_label),
                     "startedAt": item.started_at,
                     "lastActivity": item.last_activity,
@@ -285,6 +297,19 @@ impl App {
         self.open(&Target::from_history(item, &listing.0))
     }
 
+    /// Name a session, or with an empty title go back to Claude Code's own.
+    fn rename(&self, account: &str, session_id: &str, title: &str) -> Result<Value> {
+        let acc = accounts::get_account(account)?;
+        // Only name what is really there: a listed session or a saved conversation.
+        let listed = self.sessions(false)?.0.iter().any(|s| s.account == acc.name && s.session_id == session_id);
+        if !listed && !history::history_items()?.iter().any(|i| i.account == acc.name && i.session_id == session_id) {
+            return err("Session not found.");
+        }
+        let title = titles::set(&acc.dir, session_id, title)?;
+        self.invalidate(false);
+        Ok(json!({ "title": title }))
+    }
+
     fn login(&self, name: &str, relogin: bool) -> Result<Value> {
         let acc = accounts::get_account(name)?;
         let terminal = resume::open_login(&acc, relogin)?;
@@ -318,6 +343,11 @@ impl App {
                 self.close(&keys)
             }
             "/api/sessions/resume" => self.resume_session(need("key")?),
+            "/api/sessions/rename" => {
+                // An empty title is meaningful here: it gives the session its own name back.
+                let title = body.get("title").and_then(Value::as_str).unwrap_or("");
+                self.rename(need("account")?, need("sessionId")?, title)
+            }
             "/api/history/resume" => self.resume_history(need("account")?, need("sessionId")?),
             "/api/accounts/add" => {
                 let (acc, created) = accounts::add_account(need("name")?, text("alias"), text("folder"))?;
@@ -348,8 +378,14 @@ fn public(sess: &Session) -> Value {
     if let Some(map) = value.as_object_mut() {
         map.remove("accountDir");
         map.insert("cwd".into(), json!(tilde(&sess.cwd)));
+        map.insert("artifacts".into(), links(&sess.artifacts));
     }
     value
+}
+
+/// Artifacts as the page sees them: the link, not the local file behind it.
+fn links(artifacts: &[Artifact]) -> Value {
+    artifacts.iter().map(|a| json!({ "url": a.url, "title": a.title, "updatedAt": a.updated_at })).collect()
 }
 
 // ------------------------------------------------------------------- transport

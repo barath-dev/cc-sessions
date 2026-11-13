@@ -18,6 +18,7 @@ use crate::os;
 use crate::server::{self, HOST, VERSION};
 use crate::sessions::{self, Session};
 use crate::setup;
+use crate::titles;
 use crate::util::{age, err, home, ms_to_date, path_str, tilde, Error, Result};
 
 const HELP: &str = "\
@@ -28,8 +29,9 @@ cc-sessions: see, close and resume Claude Code sessions across every account.
   cc-sessions setup                change the command name, port and shortcuts
 
   cc-sessions list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
-  cc-sessions history [--folder PATH] [--account NAME] [--json]
+  cc-sessions history [--folder PATH] [--account NAME] [--by-date] [--json]
   cc-sessions close <id>... | --folder PATH | --account NAME  [--yes]
+  cc-sessions rename <id> NEW NAME | --reset
 
   cc-sessions account list [--removed]
   cc-sessions account add NAME [--alias A] [--dir PATH] [--no-login]
@@ -39,7 +41,8 @@ cc-sessions: see, close and resume Claude Code sessions across every account.
   cc-sessions account restore NAME [--alias A]
 
 Session ids are shown as account:id. Closing stops a session and keeps its
-conversation. Nothing under an account folder is ever deleted.
+conversation. A new name is kept by cc-sessions; Claude Code keeps its own
+title. Nothing under an account folder is ever deleted or changed.
 
 Options: --no-open (start without opening the browser), --version, --help
 ";
@@ -48,7 +51,7 @@ Options: --no-open (start without opening the browser), --version, --help
 const VALUE_FLAGS: &[&str] = &["folder", "account", "alias", "dir", "command", "port"];
 const SWITCHES: &[&str] = &[
     "json", "open", "closed", "all", "yes", "no-login", "removed", "no-open", "shortcut", "no-shortcut", "no-import",
-    "no-aliases", "help", "version",
+    "no-aliases", "help", "version", "by-date", "reset",
 ];
 
 pub struct Args {
@@ -137,6 +140,7 @@ fn run(args: &Args) -> Result<i32> {
         Some("list") => cmd_list(args),
         Some("history") => cmd_history(args),
         Some("close") => cmd_close(args),
+        Some("rename") => cmd_rename(args),
         Some("account") => match args.words.get(1).map(String::as_str) {
             Some("list") => account_list(args),
             Some("add") => account_add(args),
@@ -350,26 +354,76 @@ fn cmd_history(args: &Args) -> Result<i32> {
         return Ok(0);
     }
     let none = items.is_empty();
-    for (folder, group) in grouped(items, |i| i.folder_label.clone()) {
-        println!("{}", tilde(&folder));
-        let rows: Vec<Vec<String>> = group
-            .iter()
-            .map(|i| {
-                vec![
-                    ms_to_date(i.last_activity),
-                    i.account.clone(),
-                    i.id.clone(),
-                    format!("{} prompts", i.prompts),
-                    i.title.chars().take(80).collect(),
-                ]
-            })
-            .collect();
-        table(&rows, "  ");
+    let row = |i: &history::HistoryItem, folder: Option<String>| {
+        let artifacts = match i.artifacts.len() {
+            0 => String::new(),
+            1 => "1 artifact".into(),
+            n => format!("{n} artifacts"),
+        };
+        let mut cells = vec![ms_to_date(i.last_activity), i.account.clone(), i.id.clone(), format!("{} prompts", i.prompts), artifacts];
+        cells.extend(folder);
+        cells.push(i.title.chars().take(80).collect());
+        cells
+    };
+    if args.has("by-date") {
+        // Items are already newest first.
+        let rows: Vec<Vec<String>> = items.iter().map(|i| row(i, Some(tilde(&i.folder_label)))).collect();
+        table(&rows, "");
+    } else {
+        for (folder, group) in grouped(items, |i| i.folder_label.clone()) {
+            println!("{}", tilde(&folder));
+            let rows: Vec<Vec<String>> = group.iter().map(|i| row(i, None)).collect();
+            table(&rows, "  ");
+        }
     }
     if none {
         println!("No saved conversations match.");
     }
     Ok(0)
+}
+
+fn cmd_rename(args: &Args) -> Result<i32> {
+    let token = args.word(1, "the session id")?;
+    let title = args.words[2..].join(" ");
+    if title.trim().is_empty() != args.has("reset") {
+        return err("Give the new name, or --reset to go back to Claude Code's own title.");
+    }
+    let (account, ident) = match token.rsplit_once(':') {
+        Some((account, ident)) => (Some(account), ident.to_lowercase()),
+        None => (None, token.to_lowercase()),
+    };
+    // Sessions first, for a background session's short id; saved conversations cover the rest.
+    let (_, all, _) = sessions::all_active()?;
+    let mut found: Vec<(String, String, String)> = sessions::find_sessions(&all, token)
+        .iter()
+        .filter(|s| !s.session_id.is_empty())
+        .map(|s| (s.account.clone(), s.account_dir.clone(), s.session_id.clone()))
+        .collect();
+    for item in history::history_items()? {
+        let matches = account.is_none_or(|a| a == item.account) && !ident.is_empty() && item.session_id.to_lowercase().starts_with(&ident);
+        let entry = (item.account, item.account_dir, item.session_id);
+        if matches && !found.contains(&entry) {
+            found.push(entry);
+        }
+    }
+    match found.as_slice() {
+        [] => err(format!("No session matches '{token}'.")),
+        [(account, dir, session_id)] => {
+            let short: String = session_id.chars().take(8).collect();
+            match titles::set(dir, session_id, &title)? {
+                Some(title) => println!("Renamed {account}:{short} to \"{title}\". Claude Code keeps its own title."),
+                None => println!("{account}:{short} goes by Claude Code's title again."),
+            }
+            Ok(0)
+        }
+        many => {
+            eprintln!("'{token}' matches more than one session; use account:id with more of the id:");
+            for (account, _, session_id) in many {
+                eprintln!("  {account}:{session_id}");
+            }
+            Ok(1)
+        }
+    }
 }
 
 fn ancestors() -> Vec<u32> {

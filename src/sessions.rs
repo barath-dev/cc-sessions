@@ -10,9 +10,11 @@ use serde_json::{json, Map, Value};
 
 use crate::accounts::{self, Account};
 use crate::claude;
+use crate::history::Artifact;
 use crate::os;
 use crate::resume;
 use crate::store::{self, state_file};
+use crate::titles::{self, Titles};
 use crate::util::{iso_to_ms, now_ms, path_str, Error, Result};
 
 #[derive(Debug, Clone, Serialize)]
@@ -34,6 +36,13 @@ pub struct Session {
     pub kind: String,
     pub cwd: String,
     pub name: String,
+    /// True when `name` was given through this tool.
+    pub renamed: bool,
+    /// The name Claude Code has for it, when `name` is not that.
+    #[serde(skip)]
+    pub claude_name: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<Artifact>,
     pub started_at: Option<i64>,
     pub updated_at: Option<i64>,
     pub pid: Option<u32>,
@@ -106,6 +115,9 @@ fn normalise(acc: &Account, raw: &Value) -> Session {
         kind: if interactive { "interactive" } else { "background" }.to_string(),
         cwd: text(raw, "cwd").unwrap_or_default(),
         name: text(raw, "name").unwrap_or_else(|| "(unnamed)".into()),
+        renamed: false,
+        claude_name: None,
+        artifacts: Vec::new(),
         started_at,
         updated_at: started_at,
         pid,
@@ -202,7 +214,8 @@ pub fn record_closed(sess: &Session) -> Result<()> {
                 "id": sess.id,
                 "sessionId": sess.session_id,
                 "cwd": sess.cwd,
-                "name": sess.name,
+                // A name given through this tool is kept in its own record.
+                "name": sess.claude_name.as_ref().unwrap_or(&sess.name),
                 "startedAt": sess.started_at,
                 "closedAt": now_ms(),
             }),
@@ -223,6 +236,9 @@ fn session_from_ledger(acc: &Account, entry: &Value) -> Session {
         kind: "interactive".into(),
         cwd: text(entry, "cwd").unwrap_or_default(),
         name: text(entry, "name").unwrap_or_else(|| "(unnamed)".into()),
+        renamed: false,
+        claude_name: None,
+        artifacts: Vec::new(),
         started_at: entry.get("startedAt").and_then(Value::as_i64),
         updated_at: closed_at,
         pid: None,
@@ -283,9 +299,14 @@ pub fn all_sessions(accounts: &[Account]) -> Result<(Vec<Session>, Notices)> {
         }
     }
 
+    let titles = Titles::load()?;
     for sess in &mut sessions {
         sess.key = format!("{}:{}", sess.account, sess.id);
         sess.open = sess.status != "closed";
+        if let Some(given) = titles.get(&sess.account_dir, &sess.session_id) {
+            sess.claude_name = Some(std::mem::replace(&mut sess.name, given.to_string()));
+            sess.renamed = true;
+        }
         if let Some(acc) = accounts.iter().find(|a| a.name == sess.account) {
             sess.resume_command = resume::display_command(acc, &resume::Target::from_session(sess));
         }
@@ -299,7 +320,7 @@ pub fn all_sessions(accounts: &[Account]) -> Result<(Vec<Session>, Notices)> {
 /// Cheap signature of everything a session listing depends on, so a caller
 /// that polls often can skip `claude agents` until something actually changed.
 pub fn fingerprint(accounts: &[Account], sessions: &[Session]) -> Vec<(String, u128, u64)> {
-    let mut paths = vec![state_file("accounts.json"), ledger_file()];
+    let mut paths = vec![state_file("accounts.json"), ledger_file(), titles::titles_file()];
     for acc in accounts {
         let base = Path::new(&acc.dir);
         if let Ok(entries) = fs::read_dir(base.join("sessions")) {

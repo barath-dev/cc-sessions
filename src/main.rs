@@ -18,6 +18,7 @@ mod sessions;
 mod setup;
 mod shell;
 mod store;
+mod titles;
 mod util;
 
 fn main() {

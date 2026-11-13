@@ -63,8 +63,13 @@ running either way.
   refreshed every 5 seconds. Filter by account, status or text. Click a row for details.
   **Close** stops a session and keeps its conversation; **Resume** reopens a closed one in
   a new terminal window.
-- **History** — every saved conversation in every account, grouped by folder, with a
-  preview of its prompts and a **Resume** button.
+- **History** — every saved conversation in every account, newest activity first, grouped
+  **By date** or **By folder**, with a preview of its prompts and a **Resume** button. A
+  conversation that published artifacts lists them with links to claude.ai; they open for
+  the Claude login that published them.
+- **Rename**, on any session or conversation, gives it a name of your own. The name is
+  kept by cc-sessions and shown in both tabs and on the command line; Claude Code keeps
+  its own title. Clear the name to go back to that title.
 - **Accounts** — login, plan, shortcut and folder of each account. Add, rename, change
   login, remove and restore.
 
@@ -82,6 +87,7 @@ a terminal, doing nothing), `Done` (background task finished, not closed), `Clos
   history stay on disk, and **Restore** brings it back.
 - **Close** only stops a session. Its transcript stays and it can be resumed.
 - Renaming an account or its shortcut changes nothing inside the account folder.
+- Renaming a session changes nothing in its transcript. The name is kept in `titles.json`.
 - Its own records are rewritten in place with the previous version kept as `<file>.bak`.
 
 The only files it removes are its own launchers: its pid file, a command link it created
@@ -96,8 +102,9 @@ activity. The Accounts tab shows that number per account. To keep history longer
 
 ```
 cc-sessions list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
-cc-sessions history [--folder PATH] [--account NAME] [--json]
+cc-sessions history [--folder PATH] [--account NAME] [--by-date] [--json]
 cc-sessions close <id>... | --folder PATH | --account NAME  [--yes]
+cc-sessions rename <id> NEW NAME | --reset
 cc-sessions account list [--removed]
 cc-sessions account add NAME [--alias A] [--dir PATH] [--no-login]
 cc-sessions account rename NAME NEW-NAME [--alias A]
@@ -109,7 +116,9 @@ cc-sessions setup [--yes] [--command NAME] [--port N] [--shortcut | --no-shortcu
 
 Session ids are shown as `account:id`. `close` asks before closing, asks separately for
 each interactive session, and skips the session it is run from. `--yes` only skips the
-question for background sessions.
+question for background sessions. `history` groups by folder; `--by-date` prints one list,
+newest first. `rename` takes the id `history` shows, and `--reset` gives a session its own
+title back.
 
 ## Differences between systems
 
@@ -137,6 +146,7 @@ In the settings folder above:
 | `accounts.json` | Account registry: name, folder, shortcut, removed flag. |
 | `aliases.sh` | Generated account shortcuts (macOS, Linux). |
 | `closed.json` | Sessions closed through the tool. |
+| `titles.json` | Names you gave to sessions. |
 | `history-cache.json` | Rebuildable index of saved conversations. |
 | `ui-token` | Access key for the web app (readable only by you). |
 | `ui.pid`, `ui.log` | The running server's pid and its log. |
@@ -160,7 +170,8 @@ from `ui-token` on every API call, rejects requests whose `Host` is not
   process ends) and leaves a finished background session as `done` after `claude stop`.
   `closed.json` is what keeps both listed as closed.
 - History is read from `<account>/projects/<folder>/<session>.jsonl`, top level only,
-  read-only.
+  read-only. Artifacts are the links Claude Code records there when a conversation
+  publishes or opens one.
 
 ## Building from source
 
