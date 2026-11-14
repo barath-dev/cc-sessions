@@ -43,9 +43,34 @@ them works:
 4. **Register the Claude Code folders it finds** as accounts (default yes).
 5. **Manage the `claude-<name>` shortcuts** that start each account (default yes). It shows
    the one line it would add to your shell's startup file, and keeps a backup.
+6. **Keep it up to date automatically** (default yes). See [Updates](#updates).
 
-Run the install line again to update; settings are kept. Run `cc-sessions setup` to change
-any answer later.
+Run `cc-sessions setup` to change any answer later.
+
+## Updates
+
+From 2.6.0 on, cc-sessions keeps itself up to date. Once a day the server asks GitHub for
+the latest release. When there is a newer one it downloads the program for your system,
+checks it against the release's SHA-256 list, puts it in place and restarts on it; the
+page reloads and says what's new. Settings and sessions are not touched, and a close in
+progress finishes first.
+
+- Turn it off in **Settings › General › Updates**, or answer no in `cc-sessions setup`.
+  With it off, the same place has **Update now**, and `cc-sessions update` installs the
+  latest version from a terminal (`--check` only looks).
+- Only the copy the installer put in place updates itself. A build from source is told
+  about new versions and left alone.
+- It uses the system's `curl` (or `wget`, or PowerShell on Windows) and sends nothing but
+  the request for the latest release.
+- Versions before 2.6.0 cannot update themselves: run the install line once more.
+
+## Reporting problems
+
+**Settings › General › Report a problem** (or the **Report** button on any error message,
+or `cc-sessions report`) opens a new GitHub issue filled in with the version, system,
+Claude Code version, number of accounts and the last few error messages. It shows you all
+of it first, and leaves out folder paths, session names, prompts and emails. You describe
+what happened on GitHub before anything is sent. **Suggest a feature** is next to it.
 
 ## Start and stop
 
@@ -77,9 +102,10 @@ and token usage in the Finder layout.
 - **Details** open in a panel beside the list when you click a session: its prompts,
   artifacts (links to claude.ai, which open for the Claude login that published them) and
   the command that resumes it.
-- **Actions**, on each row as you point at it: rename, copy the resume command, pin, and
-  **Close** (stops the session, keeps its conversation) or **Resume** (reopens it in a new
-  terminal window). Tick open sessions to close several at once.
+- **Actions**, on each row as you point at it: rename, copy the resume command, pin, open
+  its folder in your code editor, and **Close** (stops the session, keeps its conversation)
+  or **Resume** (reopens it in a new terminal window). Tick open sessions to close several
+  at once.
 - Conversations that were opened and never used are hidden, with a link to show them.
 - **Alerts**, in the header, show a desktop notification when a session starts waiting for
   you or finishes. They need the page open in a browser tab.
@@ -90,12 +116,14 @@ A Finder-style browser of the same sessions: folders you open like folders, sess
 files in them, accounts as tags in the sidebar.
 
 - **Icons, List and Columns** views, back and forward, a path bar, and Recents, Needs you
-  and Open now in the sidebar.
+  and Open now in the sidebar. Click a column heading in the List view to sort by it
+  (name, status, account, last active, prompts or tokens); click it again to reverse.
 - **Quick Look** (Space or double-click) shows a session's details and actions; a
-  right-click menu has the rest.
+  right-click menu has the rest, including **Open in VS Code** (or Cursor, Zed...) for a
+  session's folder or a whole folder of sessions.
 - Keys as in Finder: arrows to move, Enter to rename, ⌘↑ for the folder above, ⌘[ and ⌘]
   for back and forward, ⌘1–3 for the views, ⌘O to resume, ⌘⌫ to close (after asking),
-  ⌘, for Settings.
+  ⌘E to open in your code editor, ⌘, for Settings.
 - **Usage** shows the tokens your sessions used: today, the last 7 and 30 days, a calendar
   heat map of every day, when in the week you use Claude, and totals by account, model
   and session. Pick all tokens, without cache reads, or output only. The heat maps come in
@@ -118,7 +146,11 @@ files in them, accounts as tags in the sidebar.
   - **Accounts**: login, plan, shortcut and folder of each account. Add, rename, change
     login, remove and restore. **Edit…** opens one dialog for an account's name, alias,
     colour (which marks it everywhere), login and removal.
-  - **General**: disconnecting, which stops the server.
+  - **General**: **updates** (version, check now, automatic or not), **report a problem**
+    and **suggest a feature**, the **code editor** that folders open in, picked from the ones found on
+    this computer (VS Code, Cursor, Windsurf, Zed, VSCodium, Sublime Text, IntelliJ IDEA,
+    WebStorm, PyCharm, GoLand, RustRover, Android Studio), and disconnecting, which stops
+    the server.
 - **From the keyboard** in the classic layout, **Skip to sessions** is the first stop, the
   arrow keys move through the list and the folder tree, and Esc closes the details.
 
@@ -159,7 +191,9 @@ cc-sessions account rename NAME NEW-NAME [--alias A]
 cc-sessions account login NAME
 cc-sessions account remove NAME [--yes]
 cc-sessions account restore NAME [--alias A]
-cc-sessions setup [--yes] [--command NAME] [--port N] [--shortcut | --no-shortcut] [--no-import] [--no-aliases]
+cc-sessions setup [--yes] [--command NAME] [--port N] [--shortcut | --no-shortcut] [--no-import] [--no-aliases] [--no-auto-update]
+cc-sessions update [--check]
+cc-sessions report
 ```
 
 Session ids are shown as `account:id`. `close` asks before closing, asks separately for
@@ -190,7 +224,7 @@ In the settings folder above:
 
 | File | Purpose |
 |---|---|
-| `config.json` | Answers from setup: command name, port, shortcut, idle limit. |
+| `config.json` | Answers from setup: command name, port, shortcut, idle limit, automatic updates. |
 | `accounts.json` | Account registry: name, folder, shortcut, colour, removed flag. |
 | `aliases.sh` | Generated account shortcuts (macOS, Linux). |
 | `icon.png`, `icon.ico` | Icon of the clickable shortcut (Linux, Windows). |
@@ -200,6 +234,7 @@ In the settings folder above:
 | `history-cache.json` | Rebuildable index of saved conversations, with their token counts. |
 | `ui-token` | Access key for the web app (readable only by you). |
 | `ui.pid`, `ui.log` | The running server's pid and its log. |
+| `update.json` | The last update check, and the last update installed (for "what's new"). |
 
 `idleMinutes` in `config.json` sets how long the server waits with no page open before it
 stops; `0` keeps it running until you stop it.

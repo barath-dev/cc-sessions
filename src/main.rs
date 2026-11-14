@@ -9,10 +9,12 @@ mod accounts;
 mod claude;
 mod cli;
 mod closing;
+mod editors;
 mod history;
 mod os;
 mod pins;
 mod proc;
+mod report;
 mod resume;
 mod server;
 mod sessions;
@@ -20,6 +22,7 @@ mod setup;
 mod shell;
 mod store;
 mod titles;
+mod update;
 mod util;
 
 fn main() {

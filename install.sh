@@ -71,3 +71,4 @@ fi
 
 echo
 echo "If Claude Sessions was already running, restart it to use the new version."
+echo "From now on it keeps itself up to date (Settings > General > Updates to change that)."

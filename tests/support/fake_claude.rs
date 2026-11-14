@@ -37,7 +37,8 @@ fn main() {
         ["sleep"] => std::thread::sleep(std::time::Duration::from_secs(120)),
         // The demo recording asks for longer, so its stand-in sessions outlast the tour.
         ["sleep", seconds] => std::thread::sleep(std::time::Duration::from_secs(seconds.parse().unwrap_or(120))),
-        ["--version"] => println!("0.0.0 (fake claude)"),
+        // The update tests use this program as a "new version" that says it is cc-sessions.
+        ["--version"] => println!("{}", std::env::var("FAKE_VERSION_LINE").unwrap_or_else(|_| "0.0.0 (fake claude)".into())),
         ["agents", "--json", "--all"] => {
             let text = fs::read_to_string(config_dir().join("fake-agents.json")).unwrap_or_else(|_| "[]".into());
             println!("{text}");

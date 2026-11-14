@@ -1,0 +1,47 @@
+name: Report a problem
+description: Something in cc-sessions is not working as it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. **Report a problem** in Settings › General (or `cc-sessions report`) fills in the version and system for you.
+        Please leave out anything private: folder names, session names, prompts, emails.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, and what went wrong.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to see it again
+      placeholder: |
+        1. Open the Finder layout
+        2. Right-click a session
+        3. ...
+  - type: input
+    id: version
+    attributes:
+      label: cc-sessions version
+      description: "`cc-sessions --version`, or Settings › General › Updates."
+      placeholder: "2.6.0"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      placeholder: "macOS 26.1 (aarch64)"
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Details from cc-sessions
+      description: Filled in by Report a problem. Nothing personal is included.
+      render: text

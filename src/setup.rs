@@ -182,17 +182,25 @@ pub fn run(args: &Args) -> Result<()> {
         }
     };
 
+    // 6. Updates
+    let auto_update = if args.has("no-auto-update") {
+        false
+    } else {
+        ask_yes("Keep cc-sessions up to date automatically?", old.auto_update, unattended)
+    };
+
     // Apply.
     println!();
     // Resolve links so the command points at the real program. Not on Windows,
     // where the resolved form is a \\?\ path that cmd.exe cannot run.
     let exe = if os::IS_WINDOWS { std::env::current_exe()? } else { fs::canonicalize(std::env::current_exe()?)? };
-    let config = Config { command: command.clone(), port, shortcut, manage_aliases: manage, idle_minutes: old.idle_minutes };
+    let config = Config { command: command.clone(), port, shortcut, manage_aliases: manage, idle_minutes: old.idle_minutes, auto_update };
     accounts::save_config(&config)?;
 
     let link = os::install_command(&command, &exe, Some(&old.command))?;
     println!("Command:   {command}  ({})", tilde(&path_str(&link)));
     println!("Port:      {port}");
+    println!("Updates:   {}", if auto_update { "automatic" } else { "by hand (cc-sessions update)" });
 
     if shortcut {
         println!("Shortcut:  {}", tilde(&path_str(&os::install_shortcut(&exe)?)));

@@ -81,7 +81,10 @@ function tokens(n) {
 }
 
 function toast(message, kind = 'ok') {
-  const el = h('div', { class: `toast toast-${kind}` }, message);
+  // An error is remembered for a problem report, and offers to report it.
+  const report = kind === 'error' && window.ccReport;
+  if (report) report.noteError(message);
+  const el = h('div', { class: `toast toast-${kind}` }, message, report && report.button(message));
   $('#toasts').append(el);
   setTimeout(() => el.remove(), kind === 'error' ? 9000 : 4500);
 }
@@ -111,6 +114,17 @@ async function api(path, body) {
 
 // --------------------------------------------------------------------- state
 
+// The columns things can be sorted by, each with the way it sorts first.
+const SORTS = {
+  name: { label: 'Name', dir: 'asc', session: (a, b) => byName(a, b), folder: (a, b) => byName(a, b) },
+  status: { label: 'Status', dir: 'asc', session: (a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status), folder: (a, b) => byName(a, b) },
+  account: { label: 'Account', dir: 'asc', session: (a, b) => a.account.localeCompare(b.account, undefined, { sensitivity: 'base' }), folder: (a, b) => byName(a, b) },
+  active: { label: 'Last active', dir: 'desc', session: (a, b) => a.at - b.at, folder: (a, b) => latest(a.node) - latest(b.node) },
+  prompts: { label: 'Prompts', dir: 'desc', blank: (e) => !e.item, session: (a, b) => promptsOf(a) - promptsOf(b), folder: (a, b) => folderPrompts(a.node) - folderPrompts(b.node) },
+  tokens: { label: 'Tokens', dir: 'desc', blank: (e) => !e.tokens, session: (a, b) => metricOf(a.tokens) - metricOf(b.tokens), folder: (a, b) => folderTokens(a.node) - folderTokens(b.node) },
+};
+
+
 const S = {
   data: null,
   history: null,
@@ -118,7 +132,8 @@ const S = {
   back: [],
   forward: [],
   view: ['icons', 'list', 'columns'].includes(store('cc-concept-view')) ? store('cc-concept-view') : 'icons',
-  sort: store('cc-concept-sort') === 'name' ? 'name' : 'active',
+  sort: SORTS[store('cc-concept-sort')] ? store('cc-concept-sort') : 'active',
+  sortDir: ['asc', 'desc'].includes(store('cc-concept-sort-dir')) ? store('cc-concept-sort-dir') : null,   // null: the column's own way
   scale: Number(store('cc-concept-scale')) || 1,
   selected: null,      // an item key: 'f:<folder id>' or a session's key
   expanded: new Set(), // folders opened in the list view
@@ -291,6 +306,22 @@ const folderItem = (node) => ({ key: `f:${node.id}`, kind: 'folder', node, name:
 const byActivity = (a, b) => b.at - a.at;
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 
+// How each column sorts, smallest first, for sessions and for folders (folders have no
+// status or account, so they go by name there). Ties go to the most recently active.
+const STATUS_ORDER = ['blocked', 'working', 'idle', 'done', 'closed'];
+const promptsOf = (e) => (e.item ? e.item.prompts : 0);
+const folderPrompts = (node) => node.all.reduce((sum, e) => sum + promptsOf(e), 0);
+const folderTokens = (node) => node.all.reduce((sum, e) => sum + metricOf(e.tokens), 0);
+const sortOrder = () => (S.sortDir || SORTS[S.sort].dir) === 'asc' ? 1 : -1;
+function sorter(kind) {
+  const { session, folder, blank } = SORTS[S.sort];
+  const key = kind === 'folder' ? folder : session;
+  const dir = sortOrder();
+  // Sessions with nothing in the column (not saved yet) stay at the bottom either way.
+  const empty = kind === 'session' && blank ? (a, b) => blank(a) - blank(b) : () => 0;
+  return (a, b) => empty(a, b) || key(a, b) * dir || (kind === 'folder' ? latest(b.node) - latest(a.node) : byActivity(a, b));
+}
+
 // What the current place holds: folders first, then sessions, sorted as chosen.
 function itemsIn(place = S.place, { search = S.q } = {}) {
   let folders = [];
@@ -319,9 +350,9 @@ function itemsIn(place = S.place, { search = S.q } = {}) {
     sessions = sessions.filter((e) => `${e.name} ${e.cwd} ${e.account} ${(e.item && e.item.promptText) || ''} ${e.artifacts.map((a) => a.title).join(' ')}`
       .toLowerCase().includes(needle));
   }
-  const order = S.sort === 'name' ? byName : byActivity;
-  if (place.kind === 'recents' && !needle) return [...sessions].sort(byActivity).slice(0, 60);
-  return [...folders.sort(S.sort === 'name' ? byName : (a, b) => latest(b.node) - latest(a.node)), ...[...sessions].sort(order)];
+  // Recents is the 60 most recent, in the order chosen.
+  if (place.kind === 'recents' && !needle) return [...sessions].sort(byActivity).slice(0, 60).sort(sorter('session'));
+  return [...folders.sort(sorter('folder')), ...[...sessions].sort(sorter('session'))];
 }
 
 const latest = (node) => Math.max(0, ...node.all.map((e) => e.at));
@@ -393,11 +424,8 @@ function renderToolbar() {
         h('button', { type: 'button', id: 'forward', 'aria-label': 'Forward', title: 'Forward (⌘])', onclick: goForward }, glyph('forward'))),
       h('h1', { class: 'tb-title', id: 'title' }),
       h('div', { class: 'seg seg-view', role: 'group', 'aria-label': 'View' }, view('icons', 'Icons'), view('list', 'List'), view('columns', 'Columns')),
-      h('select', { 'aria-label': 'Sort', id: 'sort', onchange: (event) => {
-        S.sort = event.target.value;
-        store('cc-concept-sort', S.sort);
-        render();
-      } }, h('option', { value: 'active' }, 'Last active'), h('option', { value: 'name' }, 'Name')),
+      h('select', { 'aria-label': 'Sort', id: 'sort', onchange: (event) => setSort(event.target.value, null) },
+        Object.entries(SORTS).map(([key, { label }]) => h('option', { value: key }, label))),
       h('label', { class: 'search' }, glyph('search'),
         h('input', { type: 'search', id: 'search', placeholder: 'Search', 'aria-label': 'Search names, folders and prompts', autocomplete: 'off',
           oninput: (event) => { S.q = event.target.value; S.selected = null; render(); } })),
@@ -511,8 +539,24 @@ function iconsView(items) {
   return grid;
 }
 
+// Sorting by a column; the same column again turns the order round.
+function setSort(sort, dir) {
+  S.sort = sort;
+  S.sortDir = dir;
+  store('cc-concept-sort', sort);
+  store('cc-concept-sort-dir', dir || '');
+  render();
+}
+
 function listView(items) {
-  const sortBy = (sort) => () => { S.sort = sort; store('cc-concept-sort', sort); render(); };
+  const header = (key, cls) => {
+    const current = S.sort === key;
+    const asc = sortOrder() === 1;
+    return h('th', { class: cls, 'aria-sort': current ? (asc ? 'ascending' : 'descending') : null },
+      h('button', { type: 'button', class: current ? `is-sorted${asc ? ' is-asc' : ''}` : null,
+        title: current ? `Sorted by ${SORTS[key].label.toLowerCase()}; click to reverse` : `Sort by ${SORTS[key].label.toLowerCase()}`,
+        onclick: () => setSort(key, current ? (asc ? 'desc' : 'asc') : null) }, SORTS[key].label));
+  };
   const body = h('tbody');
   const add = (item, depth) => {
     const selected = S.selected === item.key;
@@ -537,10 +581,7 @@ function listView(items) {
   for (const item of items) add(item, 0);
   return h('table', { class: 'list' },
     h('thead', {}, h('tr', {},
-      h('th', {}, h('button', { type: 'button', 'aria-sort': S.sort === 'name' ? 'ascending' : null, onclick: sortBy('name') }, 'Name')),
-      h('th', {}, 'Status'), h('th', {}, 'Account'),
-      h('th', {}, h('button', { type: 'button', 'aria-sort': S.sort === 'active' ? 'descending' : null, onclick: sortBy('active') }, 'Last active')),
-      h('th', {}, 'Prompts'), h('th', { class: 'num', title: metricLabel() }, 'Tokens'))),
+      header('name'), header('status'), header('account'), header('active'), header('prompts'), header('tokens', 'num'))),
     body);
 }
 
@@ -641,9 +682,11 @@ function sessionFacts(e) {
 }
 
 function actionButtons(e) {
+  const editor = editorFor(e);
   return [
     e.open ? h('button', { type: 'button', class: 'btn btn-danger', onclick: () => closeSessions([e.session]) }, window.ccIcon('circle-stop'), 'Close…')
       : e.command && h('button', { type: 'button', class: 'btn btn-primary', onclick: () => resume(e) }, window.ccIcon('play'), 'Resume'),
+    editor && h('button', { type: 'button', class: 'btn', title: `Open its folder in ${editor} (⌘E)`, onclick: () => openInEditor(e) }, window.ccIcon('square-code'), `Open in ${editor}`),
     e.command && h('button', { type: 'button', class: 'btn', onclick: () => copy(e.command) }, window.ccIcon('copy'), 'Copy command'),
     e.sessionId && h('button', { type: 'button', class: 'btn', onclick: () => { hideQuickLook(); startRename(e); } }, window.ccIcon('pencil'), 'Rename'),
     e.sessionId && h('button', { type: 'button', class: 'btn', onclick: () => pin(e) }, window.ccIcon(e.pinned ? 'pin-off' : 'pin'), e.pinned ? 'Unpin' : 'Pin'),
@@ -1248,6 +1291,21 @@ async function act(run, done) {
   }
 }
 
+// The code editor picked in Settings, if there is one and this item has a folder to open.
+function editorFor(item) {
+  const editor = window.ccEditor && window.ccEditor.current();
+  if (!editor) return null;
+  const folder = item.kind === 'folder' ? item.node.id && item.node.id !== '?' : item.cwd;
+  return folder ? editor.name : null;
+}
+
+function openInEditor(item) {
+  if (S.quickLook) hideQuickLook();
+  const target = item.kind === 'folder' ? { folder: folderPath(item.node.id) }
+    : item.session ? { key: item.session.key } : { account: item.account, sessionId: item.sessionId };
+  return act(() => window.ccEditor.open(target), (name) => `Opened ${item.name} in ${name}.`);
+}
+
 function resume(e) {
   hideQuickLook();
   return e.session
@@ -1348,6 +1406,7 @@ function showMenu(x, y, item) {
     const open = node.all.filter((e) => e.open).map((e) => e.session);
     entries_ = [
       entryButton('Open', () => open_(item), '⌘↓', false, 'folder-open'),
+      editorFor(item) && entryButton(`Open in ${editorFor(item)}`, () => openInEditor(item), '⌘E', false, 'square-code'),
       node.id && node.id !== '?' && entryButton(pinned ? 'Remove from Favourites' : 'Add to Favourites', () => pinFolder(node, !pinned), null, false, pinned ? 'pin-off' : 'pin'),
       open.length > 0 && h('hr'),
       open.length > 0 && entryButton(`Close ${plural(open.length, 'open session')}…`, () => closeSessions(open), null, true, 'circle-stop'),
@@ -1357,6 +1416,7 @@ function showMenu(x, y, item) {
     entries_ = [
       entryButton('Quick Look', () => { S.selected = e.key; toggleQuickLook(); }, 'Space', false, 'eye'),
       e.command && entryButton(e.open ? 'Open in a terminal' : 'Resume', () => resume(e), '⌘O', false, e.open ? 'square-terminal' : 'play'),
+      editorFor(e) && entryButton(`Open in ${editorFor(e)}`, () => openInEditor(e), '⌘E', false, 'square-code'),
       e.command && entryButton('Copy command', () => copy(e.command), null, false, 'copy'),
       h('hr'),
       e.sessionId && entryButton('Rename', () => startRename(e), '↩', false, 'pencil'),
@@ -1430,6 +1490,7 @@ document.addEventListener('keydown', (event) => {
   else if (cmd && (event.key === 'ArrowDown' || event.key === 'o') && item) {
     if (item.kind === 'folder' || event.key === 'ArrowDown') open(item); else if (item.command) resume(item);
   } else if (cmd && event.key === 'Backspace' && item && item.open) closeSessions([item.session]);
+  else if (cmd && event.key === 'e' && item && editorFor(item)) openInEditor(item);
   else if (event.key === ' ' ) toggleQuickLook();
   else if (event.key === 'Escape') { if (S.quickLook) hideQuickLook(); else { S.selected = null; render(); } }
   else if (event.key === 'Enter' && item) { if (item.kind === 'session' && item.sessionId) startRename(item); else open(item); }
@@ -1471,6 +1532,8 @@ async function refresh() {
     if (!S.data) $('#content').replaceChildren(h('p', { class: 'empty' }, err.message));
     return;
   }
+  // A new version (the server updated itself) reloads the page; after one, says what's new.
+  if (window.ccUpdates) window.ccUpdates.seen(data);
   const next = JSON.stringify([data.accounts, data.sessions, data.pinnedFolders]);
   if (next === signature) return;
   signature = next;
@@ -1492,6 +1555,8 @@ async function loadHistory() {
 window.addEventListener('cc-settings-changed', (event) => {
   // The flat heat maps follow the look by CSS; the 3D one is drawn, so it takes the new colours.
   if (event.detail && event.detail.kind === 'appearance') skyPalette();
+  // Which code editor there is, or which one is picked, shows in the actions.
+  if (event.detail && event.detail.kind === 'editor') { render(); return; }
   if (event.detail && event.detail.kind !== 'accounts') return;
   signature = '';
   S.usage = null;

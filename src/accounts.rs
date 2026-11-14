@@ -61,11 +61,14 @@ pub struct Config {
     /// Stop the server after this many minutes with no page open; 0 never stops it.
     #[serde(rename = "idleMinutes")]
     pub idle_minutes: u32,
+    /// Install new releases by itself (only the installer's copy does).
+    #[serde(rename = "autoUpdate")]
+    pub auto_update: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { command: "cc-sessions".into(), port: 4777, shortcut: true, manage_aliases: true, idle_minutes: 30 }
+        Config { command: "cc-sessions".into(), port: 4777, shortcut: true, manage_aliases: true, idle_minutes: 30, auto_update: true }
     }
 }
 

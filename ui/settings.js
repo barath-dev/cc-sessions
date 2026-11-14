@@ -66,7 +66,8 @@
   function toast(message, kind = 'ok') {
     const box = win && win.open ? toasts : document.getElementById('toasts');
     if (!box) return;
-    const el = h('div', { class: `toast toast-${kind}` }, message);
+    if (kind === 'error') noteError(message);
+    const el = h('div', { class: `toast toast-${kind}` }, message, kind === 'error' && reportButton(message));
     box.append(el);
     setTimeout(() => el.remove(), kind === 'error' ? 9000 : 4500);
   }
@@ -82,7 +83,7 @@
     return data;
   }
 
-  // `kind` is 'appearance' (only the look changed) or 'accounts' (the data did).
+  // `kind` is 'appearance' (only the look changed), 'accounts' (the data did) or 'editor'.
   const changed = (kind) => window.dispatchEvent(new CustomEvent('cc-settings-changed', { detail: { kind } }));
 
   // ------------------------------------------------------------- the window
@@ -471,10 +472,236 @@
     }
   }
 
+  // ----------------------------------------------------------- code editors
+
+  // The code editors on this computer, asked for once, and the one picked here (kept in
+  // this browser). Both pages open sessions' folders through window.ccEditor.
+  let editors = null;         // [{ id, name }] once known
+  let asking = null;
+  function loadEditors() {
+    asking = asking || api('/api/editors')
+      .then((result) => {
+        editors = result.editors;
+        changed('editor');
+        if (win && section === 'general') draw();
+        return editors;
+      })
+      .catch(() => { asking = null; return []; });
+    return asking;
+  }
+  const picked = () => (editors || []).find((e) => e.id === store('cc-editor')) || (editors || [])[0] || null;
+
+  window.ccEditor = {
+    // The editor folders open in, or null while not known or when there is none.
+    current: () => { loadEditors(); return picked(); },
+    // Open { key }, { account, sessionId } or { folder } in it; resolves to the editor's name.
+    open: async (target) => {
+      await loadEditors();
+      const editor = picked();
+      if (!editor) throw new Error('No code editor was found on this computer. Settings › General lists the ones supported.');
+      return (await api('/api/editor/open', { editor: editor.id, ...target })).editor;
+    },
+  };
+
+  function pickEditor(id) {
+    store('cc-editor', id);
+    changed('editor');
+    draw();
+  }
+
+  // ------------------------------------------------------ updates and reports
+
+  const REPO_URL = 'https://github.com/barath-dev/cc-sessions';
+  let version = null;         // the server's, from /api/state
+  let update = null;          // its update status, from /api/state
+  const errors = [];          // the last few error messages shown, for a report
+
+  // Each page hands its /api/state here. A new version means the server restarted on a new
+  // program, whose page files changed too: load them. After an update, say what's new once.
+  function seen(state) {
+    if (!state || !state.version) return;
+    if (version && state.version !== version) {
+      location.reload();
+      return;
+    }
+    version = state.version;
+    const before = JSON.stringify(update);
+    update = state.update || null;
+    if (win && section === 'general' && JSON.stringify(update) !== before) draw();
+    const just = update && update.justUpdated;
+    if (just && just.to && just.to.replace(/^v/, '') === version && store('cc-update-seen') !== just.to) showUpdated(just);
+  }
+
+  function showUpdated(just) {
+    if (document.querySelector('.cc-updated')) return;
+    const banner = h('div', { class: 'cc-updated', role: 'status' });
+    const dismiss = () => {
+      store('cc-update-seen', just.to);
+      banner.remove();
+    };
+    banner.append(icon('circle-check'), h('span', {}, `Updated to ${just.to.replace(/^v/, '')}.`),
+      just.notesUrl && h('a', { href: just.notesUrl, target: '_blank', rel: 'noopener noreferrer', onclick: dismiss }, 'What’s new'),
+      h('button', { type: 'button', class: 'cc-updated-x', 'aria-label': 'Dismiss', title: 'Dismiss', onclick: dismiss }, icon('x')));
+    document.body.append(banner);
+  }
+
+  // Folders in a message become <folder>, so a report never carries a path.
+  const scrub = (text) => String(text).replace(/(~|\/(Users|home)\/[^/\s]+|[A-Za-z]:\\Users\\[^\\\s]+)[^\s'"”)]*/g, '<folder>');
+
+  function noteError(message) {
+    errors.unshift(scrub(message));
+    errors.length = Math.min(errors.length, 5);
+  }
+
+  const reportButton = (message) => h('button', { type: 'button', class: 'toast-report', onclick: () => report({ error: message }) }, 'Report');
+
+  function browserName() {
+    const ua = navigator.userAgent;
+    const found = [['Edg', 'Edge'], ['OPR', 'Opera'], ['Firefox', 'Firefox'], ['Chrome', 'Chrome'], ['Version', 'Safari']]
+      .map(([token, name]) => [name, ua.match(new RegExp(`${token}/(\\d+)`))]).find(([, m]) => m);
+    return found ? `${found[0]} ${found[1][1]}` : 'unknown';
+  }
+
+  function issueUrl(fields) {
+    let url = `${REPO_URL}/issues/new?template=bug_report.yml`;
+    for (const [name, value] of Object.entries(fields)) if (value) url += `&${name}=${encodeURIComponent(value)}`;
+    // Long enough for any report; cut on a whole %XX escape.
+    return url.length > 6000 ? url.slice(0, 6000).replace(/%[0-9A-F]?$/i, '') : url;
+  }
+
+  // A new GitHub issue, filled in with version, system and recent errors. The person sees
+  // exactly what goes in first, and writes what happened on GitHub before sending.
+  async function report({ error } = {}) {
+    let diag;
+    try {
+      diag = await api('/api/diagnostics');
+    } catch {
+      diag = { version: version || 'unknown' };
+    }
+    const recent = error ? [scrub(error), ...errors.filter((e) => e !== scrub(error))] : [...errors];
+    const include = h('input', { type: 'checkbox', checked: recent.length > 0 });
+    const text = () => [
+      `cc-sessions: ${diag.version}`,
+      `Latest release: ${diag.latest || 'unknown'}`,
+      `System: ${diag.system || 'unknown'}`,
+      `Claude Code: ${diag.claudeCode || 'unknown'}`,
+      `Accounts: ${diag.accounts ?? 'unknown'}`,
+      `Auto-update: ${diag.autoUpdate ? 'on' : 'off'}`,
+      `Layout: ${location.pathname === '/' ? 'Classic' : 'Finder'}`,
+      `Browser: ${browserName()}`,
+      ...(include.checked && recent.length ? ['', 'Recent errors:', ...recent.slice(0, 5).map((e) => `- ${e}`)] : []),
+    ].join('\n');
+    const preview = h('pre', { class: 'st-report' }, text());
+    include.addEventListener('change', () => { preview.textContent = text(); });
+    const newer = update && update.available && update.latest ? update.latest.replace(/^v/, '') : null;
+    await ask({
+      title: 'Report a problem',
+      body: [
+        h('p', { class: 'st-hint' }, 'This opens a new issue on GitHub with the details below. You describe what happened there; nothing is sent until you submit it.'),
+        newer && h('p', { class: 'st-hint st-warn' }, `You have ${diag.version}. ${newer} is out and may already fix this: Settings › General › Update now.`),
+        preview,
+        recent.length > 0 && h('label', { class: 'st-check' }, include, h('span', {}, 'Include recent error messages')),
+        h('p', { class: 'st-hint' }, 'No folder paths, session names, prompts or emails are included.'),
+      ],
+      confirmLabel: 'Open GitHub',
+      // Opened while the click still counts, so the browser does not block the new tab.
+      onConfirm: () => {
+        window.open(issueUrl({ title: error ? `Error: ${scrub(error).slice(0, 80)}` : '', version: diag.version, system: diag.system, diagnostics: text() }), '_blank', 'noopener');
+      },
+    });
+  }
+
+  const since = (ms) => {
+    const minutes = Math.round((Date.now() - ms) / 60000);
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes} min ago`;
+    if (minutes < 48 * 60) return `${Math.round(minutes / 60)} h ago`;
+    return `${Math.round(minutes / 1440)} days ago`;
+  };
+
+  async function checkNow() {
+    try {
+      update = await api('/api/update/check', {});
+      draw();
+      if (update.error) toast(`Could not check for updates: ${update.error}`, 'error');
+      else toast(update.available ? `${update.latest.replace(/^v/, '')} is available.` : 'You have the latest version.');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  async function setAuto(on) {
+    try {
+      update = await api('/api/settings/auto-update', { on });
+      toast(on ? 'New versions will be installed automatically.' : 'Updates are now up to you: Settings › General, or cc-sessions update.');
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+    draw();
+  }
+
+  async function updateNow() {
+    try {
+      const result = await api('/api/update/install', {});
+      if (result.installed) toast(`Installing ${result.installed.replace(/^v/, '')}. The page reloads when it is back.`);
+      else toast('You have the latest version.');
+      update = result.status;
+      draw();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  function updatesGroup() {
+    const u = update;
+    const state = !u ? 'checking…' : u.available ? `${u.latest.replace(/^v/, '')} is available` : u.latest ? 'up to date' : u.error ? 'could not check' : 'not checked yet';
+    return h('section', { class: 'st-group' },
+      h('h4', {}, 'Updates'),
+      h('p', { class: 'st-hint' }, `Version ${version || '…'} · ${state}${u && u.checkedAt ? ` · checked ${since(u.checkedAt)}` : ''}`),
+      u && u.error && h('p', { class: 'st-hint st-warn' }, u.error),
+      u && !u.managed && h('p', { class: 'st-hint' }, 'This copy was not put in place by the installer, so it does not update itself. Run the install line to update it.'),
+      h('div', { class: 'st-choices' },
+        h('label', { class: 'st-choice' },
+          h('input', { type: 'checkbox', 'data-fk': 'st-auto-update', checked: !u || u.auto, disabled: !u, onchange: (event) => setAuto(event.target.checked) }),
+          icon('download'), h('span', {}, 'Update automatically'))),
+      h('p', { class: 'st-hint' }, 'Once a day it looks for a new version on GitHub, checks it against the release’s checksum, installs it and restarts. Your settings and sessions are not touched.'),
+      h('div', { class: 'st-buttons' },
+        h('button', { type: 'button', class: 'st-btn', 'data-fk': 'st-check', onclick: checkNow }, icon('rotate-cw'), 'Check now'),
+        u && u.available && u.managed && h('button', { type: 'button', class: 'st-btn st-btn-primary', 'data-fk': 'st-update', onclick: updateNow }, icon('download'), `Update to ${u.latest.replace(/^v/, '')}`),
+        u && u.notesUrl && h('a', { class: 'st-link', href: u.notesUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Release notes')));
+  }
+
+  function feedbackGroup() {
+    const link = (href, glyph, label) => h('a', { class: 'st-btn', href, target: '_blank', rel: 'noopener noreferrer' }, icon(glyph), label);
+    return h('section', { class: 'st-group' },
+      h('h4', {}, 'Help and feedback'),
+      h('p', { class: 'st-hint' }, 'Something not working, or an idea? It goes to the project on GitHub.'),
+      h('div', { class: 'st-buttons' },
+        h('button', { type: 'button', class: 'st-btn', 'data-fk': 'st-report', onclick: () => report() }, icon('bug'), 'Report a problem…'),
+        link(`${REPO_URL}/issues/new?template=feature_request.yml`, 'lightbulb', 'Suggest a feature'),
+        link(`${REPO_URL}/releases`, 'list', 'Release notes')));
+  }
+
+  window.ccUpdates = { seen };
+  window.ccReport = { open: report, noteError, button: reportButton };
+
   // ---------------------------------------------------------------- general
 
   function general() {
+    loadEditors();
+    const current = picked();
+    if (!update) api('/api/state').then((state) => seen(state)).catch(() => {});
     return [
+      updatesGroup(),
+      h('section', { class: 'st-group' },
+        h('h4', {}, 'Code editor'),
+        h('p', { class: 'st-hint' }, 'Open a session’s folder in it from the session’s menu, its details or Quick Look.'),
+        editors === null ? h('p', { class: 'st-hint' }, 'Looking for editors…')
+          : editors.length ? h('div', { class: 'st-choices', role: 'radiogroup', 'aria-label': 'Code editor' }, editors.map((e) => h('label', { class: 'st-choice' },
+            h('input', { type: 'radio', name: 'st-editor', value: e.id, 'data-fk': `st-editor:${e.id}`, checked: current && current.id === e.id, onchange: () => pickEditor(e.id) }),
+            icon('square-code'), h('span', {}, e.name))))
+            : h('p', { class: 'st-hint' }, 'None found. It looks for VS Code, Cursor, Windsurf, Zed, VSCodium, Sublime Text and the JetBrains IDEs, by their command or (on a Mac) their app.')),
+      feedbackGroup(),
       h('section', { class: 'st-group' },
         h('h4', {}, 'Disconnect'),
         h('p', { class: 'st-hint' }, 'Stops Claude Sessions, the server behind this page. Your Claude sessions keep running, and nothing is closed or deleted.'),

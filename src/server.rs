@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,14 +19,17 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::accounts::{self, Account};
 use crate::claude::{self, AuthInfo};
 use crate::closing;
+use crate::editors;
 use crate::history::{self, Artifact, Tokens};
 use crate::os;
 use crate::pins::{self, Pins};
+use crate::report;
 use crate::resume::{self, Target};
 use crate::sessions::{self, Session};
 use crate::store::{state_dir, state_file};
 use crate::titles;
-use crate::util::{err, log_stamp, now_ms, tilde, Error, Result};
+use crate::update;
+use crate::util::{err, expand_tilde, log_stamp, now_ms, tilde, Error, Result};
 
 pub const HOST: &str = "127.0.0.1";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -119,6 +122,8 @@ pub struct App {
     token: String,
     port: u16,
     stopping: AtomicBool,
+    /// Set when a new program is in place: on stopping, start it in our place.
+    restart: AtomicBool,
     actions: Mutex<()>, // held while a close is in progress
     sessions: Mutex<SessionCache>,
     auth: Mutex<AuthCache>,
@@ -131,6 +136,7 @@ impl App {
             token,
             port,
             stopping: AtomicBool::new(false),
+            restart: AtomicBool::new(false),
             actions: Mutex::new(()),
             sessions: Mutex::new(SessionCache { data: None, at: Instant::now(), fingerprint: Vec::new() }),
             auth: Mutex::new(AuthCache { by_dir: HashMap::new(), at: None, watch_until: None }),
@@ -230,7 +236,25 @@ impl App {
                 "gracefulClose": os::GRACEFUL_CLOSE,
             },
             "serverTime": now_ms(),
+            "version": VERSION,
+            "update": update::status(),
         }))
+    }
+
+    /// Install the newer release now (Settings' Update now), then restart on it.
+    fn update_now(&self) -> Result<Value> {
+        let Some(release) = update::check()? else {
+            return Ok(json!({ "installed": null, "status": update::status() }));
+        };
+        update::install(&release)?;
+        self.restart_soon();
+        Ok(json!({ "installed": release.tag, "status": update::status() }))
+    }
+
+    /// Stop the way Disconnect does (after any close in progress) and start the new program.
+    fn restart_soon(&self) {
+        self.restart.store(true, Ordering::SeqCst);
+        self.stopping.store(true, Ordering::SeqCst);
     }
 
     fn history(&self) -> Result<Value> {
@@ -366,6 +390,41 @@ impl App {
         self.open(&Target::from_history(item, &listing.0))
     }
 
+    /// Open a session's folder in a code editor: a listed session by `key`, a saved one by
+    /// `account` and `sessionId`, or a `folder` that sessions ran in or sit under. The folder
+    /// always comes from our own records, never from whatever path the page names.
+    fn open_in_editor(&self, editor: &str, body: &Value) -> Result<Value> {
+        let text = |field: &str| body.get(field).and_then(Value::as_str).filter(|s| !s.is_empty());
+        let listing = self.sessions(false)?;
+        let items = history::history_items()?;
+        let folder = if let Some(key) = text("key") {
+            match listing.0.iter().find(|s| s.key == key) {
+                Some(sess) => PathBuf::from(&sess.cwd),
+                None => return err("Session not found."),
+            }
+        } else if let (Some(account), Some(session_id)) = (text("account"), text("sessionId")) {
+            match items.iter().find(|i| i.account == account && i.session_id == session_id) {
+                Some(item) => PathBuf::from(&item.cwd),
+                None => return err("Conversation not found."),
+            }
+        } else if let Some(folder) = text("folder") {
+            // The page names folders as it shows them, with ~ for the home folder.
+            let folder = expand_tilde(folder);
+            let known = listing.0.iter().map(|s| s.cwd.as_str()).chain(items.iter().map(|i| i.cwd.as_str()));
+            let mut known = known.filter(|cwd| !cwd.is_empty());
+            if !folder.is_absolute() || !known.any(|cwd| Path::new(cwd).starts_with(&folder)) {
+                return err("No session ran in that folder.");
+            }
+            folder
+        } else {
+            return err("Missing 'key', 'account' and 'sessionId', or 'folder'.");
+        };
+        if folder.as_os_str().is_empty() {
+            return err("This session's folder is not known.");
+        }
+        Ok(json!({ "editor": editors::open(editor, &folder)? }))
+    }
+
     /// Name a session, or with an empty title go back to Claude Code's own.
     fn rename(&self, account: &str, session_id: &str, title: &str) -> Result<Value> {
         let acc = accounts::get_account(account)?;
@@ -443,6 +502,19 @@ impl App {
             }
             "/api/pins" => self.pin(body, body.get("pinned").and_then(Value::as_bool).unwrap_or(true)),
             "/api/history/resume" => self.resume_history(need("account")?, need("sessionId")?),
+            "/api/editor/open" => self.open_in_editor(need("editor")?, body),
+            "/api/update/check" => {
+                // A failed check is shown in the status, not as a failed request.
+                let _ = update::check();
+                Ok(update::status())
+            }
+            "/api/update/install" => self.update_now(),
+            "/api/settings/auto-update" => {
+                let mut config = accounts::load_config();
+                config.auto_update = body.get("on").and_then(Value::as_bool).ok_or_else(|| Error("Missing 'on'.".into()))?;
+                accounts::save_config(&config)?;
+                Ok(update::status())
+            }
             "/api/accounts/add" => {
                 let (acc, created) = accounts::add_account(need("name")?, text("alias"), text("folder"))?;
                 let mut out = self.changed(acc);
@@ -571,6 +643,8 @@ fn handle(app: &App, mut request: Request) {
             "/api/history" => app.history(),
             "/api/usage" => app.usage(),
             "/api/usage/sessions" => app.usage_sessions(&query),
+            "/api/diagnostics" => Ok(report::diagnostics()),
+            "/api/editors" => Ok(json!({ "editors": editors::installed().iter().map(|e| json!({ "id": e.id, "name": e.name })).collect::<Vec<_>>() })),
             _ => return respond_json(request, 404, &json!({ "error": "Not found." })),
         }
     } else if *request.method() == Method::Post {
@@ -616,8 +690,17 @@ fn idle_limit() -> Option<Duration> {
 pub fn serve() -> Result<()> {
     let port = port();
     let app = Arc::new(App::new(load_token()?, port));
-    let server = Server::http((HOST, port)).map_err(|e| Error(format!("could not listen on {HOST}:{port}: {e}")))?;
+    // After an update the server it replaces may still be letting go of the port.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let server = loop {
+        match Server::http((HOST, port)) {
+            Ok(server) => break server,
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(200)),
+            Err(e) => return err(format!("could not listen on {HOST}:{port}: {e}")),
+        }
+    };
     let server = Arc::new(server);
+    update::tidy();
 
     fs::create_dir_all(state_dir())?;
     fs::write(pid_file(), format!("{}\n", std::process::id()))?;
@@ -636,6 +719,22 @@ pub fn serve() -> Result<()> {
             })
         })
         .collect();
+
+    // Once a day, look for a new release; with auto-update on, install it and restart on it.
+    {
+        let app = app.clone();
+        thread::spawn(move || {
+            thread::sleep(update_delay());
+            while !app.stopping.load(Ordering::SeqCst) {
+                if update::round() {
+                    eprintln!("{} installed a new version; restarting on it", log_stamp());
+                    app.restart_soon();
+                    break;
+                }
+                thread::sleep(Duration::from_secs(3600));
+            }
+        });
+    }
 
     let signalled = os::stop_flag();
     let idle = idle_limit();
@@ -664,6 +763,34 @@ pub fn serve() -> Result<()> {
     if fs::read_to_string(pid_file()).is_ok_and(|pid| pid.trim() == std::process::id().to_string()) {
         let _ = fs::remove_file(pid_file());
     }
+    if app.restart.load(Ordering::SeqCst) {
+        // The listener is gone; the new program takes the port over.
+        drop(server);
+        eprintln!("{} cc-sessions {VERSION} stopped; starting the new version", log_stamp());
+        return start_detached(&os::installed_program());
+    }
     eprintln!("{} cc-sessions stopped ({reason})", log_stamp());
+    Ok(())
+}
+
+/// How long after starting the first update check waits, so starting stays quick.
+fn update_delay() -> Duration {
+    let seconds = std::env::var("CC_SESSIONS_UPDATE_DELAY").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
+    Duration::from_secs(seconds)
+}
+
+/// Start `exe serve` on its own, logging to ui.log, so closing a terminal does not take it down.
+pub fn start_detached(exe: &Path) -> Result<()> {
+    fs::create_dir_all(state_dir())?;
+    let log = fs::OpenOptions::new().create(true).append(true).open(log_file())?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("serve").current_dir(crate::util::home()).stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().to_uppercase().starts_with("CLAUDE") {
+            cmd.env_remove(key);
+        }
+    }
+    os::detach(&mut cmd);
+    cmd.spawn()?;
     Ok(())
 }

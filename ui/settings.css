@@ -262,3 +262,20 @@
   .st-side { flex-direction: row; flex-wrap: wrap; align-items: center; padding: 0.6rem; border-right: 0; border-bottom: 1px solid var(--line); }
   .st-title { margin: 0 0.5rem 0 0.3rem; }
 }
+
+/* Updates and problem reports. */
+.st-buttons { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+a.st-btn { text-decoration: none; }
+.st-check { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 13px; cursor: pointer; }
+.st-check input { margin: 0; accent-color: var(--accent); }
+.st-report { max-height: 14rem; margin: 0; padding: 0.6rem 0.75rem; overflow: auto; border: 1px solid var(--line); border-radius: 7px; background: var(--st-bg, var(--surface, var(--window))); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.toast { display: flex; align-items: center; gap: 0.75rem; }
+.toast-report { flex: none; margin-left: auto; padding: 0.15rem 0.55rem; border: 1px solid currentColor; border-radius: 6px; background: none; color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; opacity: 0.9; }
+.toast-report:hover { opacity: 1; }
+/* After an update: a quiet note in the corner, with what's new. */
+.cc-updated { position: fixed; left: 1rem; bottom: 1rem; z-index: 35; display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.6rem 0.55rem 0.8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--window, var(--surface)); color: var(--ink); font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); }
+.cc-updated > .cc-icon { width: 1rem; height: 1rem; color: var(--accent); }
+.cc-updated a { color: var(--accent); font-weight: 600; }
+.cc-updated-x { display: grid; place-items: center; width: 1.6rem; height: 1.6rem; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
+.cc-updated-x:hover { background: var(--hover, rgb(0 0 0 / 0.06)); color: var(--ink); }
+.cc-updated-x .cc-icon { width: 0.9rem; height: 0.9rem; }

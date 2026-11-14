@@ -156,7 +156,10 @@ function groupBy(items, keyOf) {
 }
 
 function toast(message, kind = 'ok') {
-  const el = h('div', { class: `toast toast-${kind}` }, message);
+  // An error is remembered for a problem report, and offers to report it.
+  const report = kind === 'error' && window.ccReport;
+  if (report) report.noteError(message);
+  const el = h('div', { class: `toast toast-${kind}` }, message, report && report.button(message));
   $('#toasts').append(el);
   setTimeout(() => el.remove(), kind === 'error' ? 10000 : 5000);
 }
@@ -324,6 +327,8 @@ async function refresh() {
     return;
   }
   setOnline();
+  // A new version (the server updated itself) reloads the page; after one, says what's new.
+  if (window.ccUpdates) window.ccUpdates.seen(data);
   const signature = JSON.stringify([data.accounts, data.sessions, data.unregistered, data.pinnedFolders]);
   if (signature === state.signature) return;
   const names = (d) => (d ? d.accounts.map((a) => `${a.name}:${a.removed}`).join() : '');
@@ -1013,6 +1018,7 @@ function entryRow(e, folder, hit) {
       e.command && h('button', { type: 'button', class: 'icon-btn row-quiet', 'aria-label': `Copy the command that resumes ${e.name}`,
         title: 'Copy the command that resumes it', onclick: () => copyText(e.command) }, icon('copy')),
       pinButton(e, true),
+      editorButton(e, true),
       mainAction(e)),
     selected && !wide.matches && entryDetails(e, 'row'));
   if (e.key !== rowCursor) for (const control of row.querySelectorAll(FOCUSABLE)) control.tabIndex = -1;
@@ -1026,6 +1032,17 @@ function mainAction(e) {
   if (e.open) return button('circle-stop', 'Close', () => closeOne(s));
   if (s) return button('play', 'Resume', () => resumeSession(s));
   return item.resumeCommand ? button('play', 'Resume', () => resumeHistory(item)) : null;
+}
+
+// The session's folder in the code editor picked in Settings; an icon on a row, worded in the details.
+function editorButton(e, quiet = false) {
+  const editor = window.ccEditor && window.ccEditor.current();
+  if (!editor || !e.cwd) return null;
+  const target = e.session ? { key: e.session.key } : { account: e.account, sessionId: e.sessionId };
+  return h('button', { type: 'button', class: quiet ? 'icon-btn row-quiet' : 'btn btn-small',
+    'aria-label': quiet ? `Open ${e.name}'s folder in ${editor.name}` : null, title: `Open its folder in ${editor.name}`,
+    onclick: () => act(() => window.ccEditor.open(target), (name) => `Opened ${e.name} in ${name}.`) },
+  icon('square-code'), !quiet && `Open in ${editor.name}`);
 }
 
 // On a row it is an icon among the quick actions; in the details it has its word too.
@@ -1143,6 +1160,7 @@ function entryDetails(e, where) {
       mainAction(e),
       e.command && h('button', { type: 'button', class: 'btn btn-small',
         onclick: () => copyText(e.command) }, icon('copy'), 'Copy command'),
+      editorButton(e),
       e.sessionId && h('button', { type: 'button', class: 'btn btn-small', onclick: () => startRename(e, where) }, icon('pencil'), 'Rename'),
       pinButton(e)),
     h('dl', { class: 'facts' }, [
@@ -1314,6 +1332,8 @@ $('#open-settings').addEventListener('click', () => window.ccSettings.open());
 for (const slot of document.querySelectorAll('.ic[data-icon]')) slot.replaceWith(icon(slot.dataset.icon));
 // Accounts change in Settings and the list follows. A change of look is CSS's alone.
 window.addEventListener('cc-settings-changed', (event) => {
+  // Which code editor there is, or which one is picked, shows in the actions.
+  if (event.detail && event.detail.kind === 'editor') { render(); return; }
   if (event.detail && event.detail.kind !== 'accounts') return;
   state.signature = '';
   if (state.history) loadHistory();

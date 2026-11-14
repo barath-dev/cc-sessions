@@ -1,10 +1,8 @@
 //! Command line: start the web app, or list, close and manage from a terminal.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fs;
 use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -15,18 +13,22 @@ use crate::claude;
 use crate::closing;
 use crate::history;
 use crate::os;
+use crate::report;
 use crate::server::{self, HOST, VERSION};
 use crate::sessions::{self, Session};
 use crate::setup;
 use crate::titles;
-use crate::util::{age, err, home, ms_to_date, path_str, tilde, Error, Result};
+use crate::update;
+use crate::util::{age, err, ms_to_date, path_str, tilde, Error, Result};
 
 const HELP: &str = "\
 cc-sessions: see, close and resume Claude Code sessions across every account.
 
   cc-sessions                      start the web app if needed and open it
   cc-sessions stop                 stop the web app (same as Disconnect in the page)
-  cc-sessions setup                change the command name, port and shortcuts
+  cc-sessions setup                change the command name, port, shortcuts and updates
+  cc-sessions update [--check]     install the latest version now (--check: only look)
+  cc-sessions report               report a problem: opens a filled-in GitHub issue
 
   cc-sessions list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
   cc-sessions history [--folder PATH] [--account NAME] [--by-date] [--json]
@@ -51,7 +53,7 @@ Options: --no-open (start without opening the browser), --version, --help
 const VALUE_FLAGS: &[&str] = &["folder", "account", "alias", "dir", "command", "port"];
 const SWITCHES: &[&str] = &[
     "json", "open", "closed", "all", "yes", "no-login", "removed", "no-open", "shortcut", "no-shortcut", "no-import",
-    "no-aliases", "help", "version", "by-date", "reset",
+    "no-aliases", "help", "version", "by-date", "reset", "check", "no-auto-update",
 ];
 
 pub struct Args {
@@ -107,10 +109,17 @@ pub fn main() -> i32 {
         Ok(args) => args,
         Err(e) => return fail(&e),
     };
-    match run(&args) {
+    let code = match run(&args) {
         Ok(code) => code,
         Err(e) => fail(&e),
+    };
+    let quiet = matches!(args.words.first().map(String::as_str), Some("serve" | "update" | "setup" | "report")) || args.has("json");
+    if !quiet && !accounts::load_config().auto_update {
+        if let Some(tag) = update::known_newer() {
+            eprintln!("\ncc-sessions {} is out. Install it with: {} update", tag.trim_start_matches('v'), me());
+        }
     }
+    code
 }
 
 /// What the person types to run this tool; setup lets them rename it.
@@ -137,6 +146,8 @@ fn run(args: &Args) -> Result<i32> {
         Some("stop") => cmd_stop(),
         Some("serve") => server::serve().map(|_| 0),
         Some("setup") => setup::run(args).map(|_| 0),
+        Some("update") => cmd_update(args),
+        Some("report") => cmd_report(),
         Some("list") => cmd_list(args),
         Some("history") => cmd_history(args),
         Some("close") => cmd_close(args),
@@ -249,26 +260,8 @@ fn cmd_open(args: &Args) -> Result<i32> {
         if port_busy() {
             return err(format!("Port {port} is in use by another program. Stop it, or pick another port with: {} setup", me()));
         }
-        fs::create_dir_all(crate::store::state_dir())?;
-        let log = fs::OpenOptions::new().create(true).append(true).open(server::log_file())?;
-        let exe = std::env::current_exe()?;
-        let mut cmd = Command::new(exe);
-        cmd.arg("serve").current_dir(home()).stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
-        for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().to_uppercase().starts_with("CLAUDE") {
-                cmd.env_remove(key);
-            }
-        }
-        // On its own, so closing this terminal does not take the server down.
-        os::detach(&mut cmd);
-        cmd.spawn()?;
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while ping().is_none() {
-            if Instant::now() > deadline {
-                return err(format!("The server did not start. See {}.", tilde(&path_str(&server::log_file()))));
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
+        server::start_detached(&std::env::current_exe()?)?;
+        wait_for_server()?;
         println!("Claude Sessions started.");
     }
     let base = format!("http://{HOST}:{port}");
@@ -279,6 +272,67 @@ fn cmd_open(args: &Args) -> Result<i32> {
     }
     println!("  {base}");
     println!("  Stop it with Disconnect in the page, or: {} stop", me());
+    Ok(0)
+}
+
+fn wait_for_server() -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ping().is_none() {
+        if Instant::now() > deadline {
+            return err(format!("The server did not start. See {}.", tilde(&path_str(&server::log_file()))));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+fn cmd_update(args: &Args) -> Result<i32> {
+    println!("Looking for a new version...");
+    let Some(release) = update::check()? else {
+        println!("cc-sessions {VERSION} is the latest version.");
+        return Ok(0);
+    };
+    println!("cc-sessions {} is out (this is {VERSION}).", release.tag.trim_start_matches('v'));
+    if !release.url.is_empty() {
+        println!("  What's new: {}", release.url);
+    }
+    if args.has("check") {
+        println!("Install it with: {} update", me());
+        return Ok(0);
+    }
+    let running = ping().is_some();
+    update::install(&release)?;
+    println!("Installed {}.", release.tag);
+    if running {
+        // The running server is the old program: stop it and start the new one.
+        cmd_stop()?;
+        server::start_detached(&os::installed_program())?;
+        wait_for_server()?;
+        println!("Claude Sessions restarted on the new version.");
+    }
+    Ok(0)
+}
+
+fn cmd_report() -> Result<i32> {
+    let diag = report::diagnostics();
+    let summary = report::summary(&diag);
+    let url = report::issue_url(&[
+        ("version", diag.get("version").and_then(Value::as_str).unwrap_or(VERSION)),
+        ("system", diag.get("system").and_then(Value::as_str).unwrap_or("")),
+        ("diagnostics", &summary),
+    ]);
+    println!("This opens a new issue on GitHub with these details, for you to describe the problem:\n");
+    for line in summary.lines() {
+        println!("  {line}");
+    }
+    if let Some(tag) = update::known_newer() {
+        println!("\n{tag} is out and may already fix it: {} update", me());
+    }
+    println!();
+    if let Err(e) = os::open_browser(&url) {
+        eprintln!("warning: {e}");
+    }
+    println!("If no browser opened, go to:\n  {url}");
     Ok(0)
 }
 

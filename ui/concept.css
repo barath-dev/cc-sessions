@@ -216,7 +216,11 @@ button, input, select { font: inherit; color: inherit; }
 .list { width: 100%; border-collapse: collapse; }
 .list th { position: sticky; top: -1rem; z-index: 1; padding: 0.35rem 0.6rem; background: var(--window); border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 500; text-align: left; white-space: nowrap; }
 .list th button { padding: 0; border: 0; background: none; color: inherit; font-weight: 500; cursor: default; }
-.list th button[aria-sort]::after { content: " ▾"; }
+.list th button:hover { color: var(--ink); }
+.list th button.is-sorted { color: var(--ink); }
+.list th button.is-sorted::after { content: " ▾"; }
+.list th button.is-sorted.is-asc::after { content: " ▴"; }
+.list th.num button { text-align: right; }
 .row td { padding: 0.28rem 0.6rem; white-space: nowrap; }
 .row:nth-child(even) td { background: var(--stripe); }
 .row.is-sel td { background: var(--accent); color: var(--on-accent); }

@@ -1,14 +1,14 @@
 //! End-to-end tests: the real program against a fake `claude`, in a temporary
 //! home folder. They run the same way on Mac, Linux and Windows.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -127,7 +127,12 @@ impl Machine {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(EXE);
+        self.command_at(Path::new(EXE), args)
+    }
+
+    /// The same, running a copy of the program from somewhere else.
+    fn command_at(&self, exe: &Path, args: &[&str]) -> Command {
+        let mut cmd = Command::new(exe);
         cmd.args(args);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().to_uppercase().starts_with("CLAUDE") {
@@ -146,8 +151,19 @@ impl Machine {
             .env("CC_SESSIONS_PORT", self.port.to_string())
             .env("CC_SESSIONS_SKIP_PATH", "1")
             .env("FAKE_CLAUDE_LOG", self.root.join("claude-calls.log"))
+            // Never ask GitHub from a test: a port nothing listens on fails at once.
+            .env("CC_SESSIONS_UPDATE_BASE", "http://127.0.0.1:9")
             .current_dir(&self.home);
         cmd
+    }
+
+    /// Where the installer would put the program in this home.
+    fn installed(&self) -> PathBuf {
+        if cfg!(windows) {
+            self.root.join("localappdata").join("cc-sessions").join("cc-sessions.exe")
+        } else {
+            self.home.join(".local").join("share").join("cc-sessions").join("cc-sessions")
+        }
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -587,6 +603,228 @@ fn usage_by_session_for_a_day() {
     let (_, body) = m.get("/api/usage/sessions?from=400000&to=400024", Some(&token), None);
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["sessions"], json!([]));
     assert_eq!(m.get("/api/usage/sessions", Some(&token), None).0, 400, "hours are required");
+}
+
+#[test]
+fn open_in_editor() {
+    let mut m = Machine::new("editor", 47814);
+    // A stand-in editor on PATH: the fake claude, which writes down every call.
+    fs::copy(FAKE_CLAUDE, m.root.join("bin").join(if cfg!(windows) { "zed.exe" } else { "zed" })).unwrap();
+    let folder = m.root.join("code").join("app");
+    fs::create_dir_all(&folder).unwrap();
+    let project = m.account("work").join("projects").join("-code-app");
+    fs::create_dir_all(&project).unwrap();
+    let session_id = "aaaa0005-3333-4444-5555-666677778888";
+    let line = json!({ "type": "user", "cwd": folder, "timestamp": "2026-11-10T06:20:00.000Z", "message": { "role": "user", "content": "tidy up" } });
+    fs::write(project.join(format!("{session_id}.jsonl")), line.to_string()).unwrap();
+    let under_home = m.home.join("work").join("site");
+    fs::create_dir_all(&under_home).unwrap();
+    let project = m.account("work").join("projects").join("-home-work-site");
+    fs::create_dir_all(&project).unwrap();
+    let line = json!({ "type": "user", "cwd": under_home, "timestamp": "2026-11-10T07:00:00.000Z", "message": { "role": "user", "content": "hello" } });
+    fs::write(project.join("aaaa0006-3333-4444-5555-666677778888.jsonl"), line.to_string()).unwrap();
+    m.seal();
+
+    assert!(m.run(&["--no-open"]).status.success());
+    let token = m.token();
+    let (status, body) = m.get("/api/editors", Some(&token), None);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""id":"zed""#), "the editor on PATH is found: {body}");
+
+    let open = |body: Value| m.post("/api/editor/open", &token, "Content-Type: application/json\r\n", &body.to_string());
+    let (status, body) = open(json!({ "editor": "zed", "account": "work", "sessionId": session_id }));
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("Zed"), "{body}");
+    let opened = |path: &Path| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if m.log().lines().any(|l| l.split('\t').next() == Some(&*path.to_string_lossy())) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+    assert!(opened(&folder), "the session's folder was opened: {}", m.log());
+
+    // A folder above a session's is fine; one no session ran in is not, nor is a relative one.
+    assert_eq!(open(json!({ "editor": "zed", "folder": folder.parent().unwrap() })).0, 200);
+    assert!(opened(folder.parent().unwrap()));
+    assert_eq!(open(json!({ "editor": "zed", "folder": m.root.join("elsewhere") })).0, 400);
+    // The page writes folders under the home folder with a ~.
+    assert_eq!(open(json!({ "editor": "zed", "folder": "~/work" })).0, 200);
+    assert!(opened(&m.home.join("work")));
+    assert_eq!(open(json!({ "editor": "zed", "folder": "code" })).0, 400);
+    assert_eq!(open(json!({ "editor": "zed", "account": "work", "sessionId": "nope" })).0, 400);
+    assert_eq!(open(json!({ "editor": "notepad-9000", "account": "work", "sessionId": session_id })).0, 400);
+    assert_eq!(open(json!({ "account": "work", "sessionId": session_id })).0, 400, "the editor is required");
+}
+
+// ------------------------------------------------------------------- updates
+
+type Files = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+
+/// A stand-in for GitHub's releases on 127.0.0.1: answers each GET from `files`.
+fn release_server(port: u16, files: Files) -> String {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                match stream.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => request.extend_from_slice(&buf[..n]),
+                }
+            }
+            let head = String::from_utf8_lossy(&request).to_string();
+            let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let found = files.lock().unwrap().get(&path).cloned();
+            let (status, body) = match found {
+                Some(body) => ("200 OK", body),
+                None => ("404 Not Found", b"not found".to_vec()),
+            };
+            let _ = stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// The release file for this system, as release.yml names it.
+fn asset_name() -> String {
+    let os = if cfg!(target_os = "macos") { "macos" } else if cfg!(windows) { "windows" } else { "linux" };
+    let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { std::env::consts::ARCH };
+    format!("cc-sessions-{os}-{arch}{}", if cfg!(windows) { ".exe" } else { "" })
+}
+
+/// SHA-256 with the system's own tool, to write the checksum list the way a release does.
+fn sha256_of(path: &Path) -> String {
+    let out = if cfg!(windows) {
+        Command::new("certutil").args(["-hashfile"]).arg(path).arg("SHA256").output().unwrap()
+    } else if cfg!(target_os = "macos") {
+        Command::new("shasum").args(["-a", "256"]).arg(path).output().unwrap()
+    } else {
+        Command::new("sha256sum").arg(path).output().unwrap()
+    };
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let hash = if cfg!(windows) { text.lines().nth(1).unwrap_or("").replace(' ', "") } else { text.split_whitespace().next().unwrap_or("").to_string() };
+    hash.to_lowercase()
+}
+
+/// Publish `program` as release `tag` for this system, with a correct checksum list.
+fn publish(files: &Files, tag: &str, program: &Path) {
+    let asset = asset_name();
+    let mut files = files.lock().unwrap();
+    files.insert("/latest.json".into(), json!({ "tag_name": tag, "html_url": format!("https://example.invalid/{tag}"), "body": "Better things." }).to_string().into_bytes());
+    files.insert(format!("/download/{tag}/{asset}"), fs::read(program).unwrap());
+    files.insert(format!("/download/{tag}/checksums.txt"), format!("{}  {asset}\n", sha256_of(program)).into_bytes());
+}
+
+#[test]
+fn update_installs_a_checked_release() {
+    let mut m = Machine::new("update", 47815);
+    let installed = m.installed();
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::copy(EXE, &installed).unwrap();
+    m.seal();
+    // The "new version" is the fake claude, told to say it is cc-sessions 99.0.0.
+    let files: Files = Arc::default();
+    let base = release_server(47816, files.clone());
+    publish(&files, "v99.0.0", Path::new(FAKE_CLAUDE));
+    let update = |exe: &Path, args: &[&str]| {
+        m.command_at(exe, args).env("CC_SESSIONS_UPDATE_BASE", &base).env("FAKE_VERSION_LINE", "cc-sessions 99.0.0").stdin(Stdio::null()).output().unwrap()
+    };
+    let original = fs::read(EXE).unwrap();
+
+    let out = update(&installed, &["update", "--check"]);
+    assert!(out.status.success() && text(&out).contains("99.0.0 is out"), "{}", text(&out));
+    assert_eq!(fs::read(&installed).unwrap(), original, "--check changes nothing");
+
+    // A download that does not match the checksum list is refused.
+    let sums = "/download/v99.0.0/checksums.txt".to_string();
+    let good = files.lock().unwrap().insert(sums.clone(), format!("{}  {}\n", "0".repeat(64), asset_name()).into_bytes()).unwrap();
+    let out = update(&installed, &["update"]);
+    assert!(!out.status.success() && text(&out).contains("does not match"), "{}", text(&out));
+    assert_eq!(fs::read(&installed).unwrap(), original, "nothing was replaced");
+
+    // With the right checksum it is put in place, and remembered for the page's "what's new".
+    files.lock().unwrap().insert(sums, good);
+    let out = update(&installed, &["update"]);
+    assert!(out.status.success() && text(&out).contains("Installed v99.0.0"), "{}", text(&out));
+    assert_eq!(fs::read(&installed).unwrap(), fs::read(FAKE_CLAUDE).unwrap(), "the new program is in place");
+    let state: Value = serde_json::from_str(&fs::read_to_string(m.state.join("update.json")).unwrap()).unwrap();
+    assert_eq!(state["justUpdated"]["to"], "v99.0.0", "{state}");
+    assert_eq!(state["latest"], "v99.0.0");
+
+    // A copy the installer did not put in place never replaces itself.
+    let out = update(Path::new(EXE), &["update"]);
+    assert!(!out.status.success() && text(&out).contains("not put in place by its installer"), "{}", text(&out));
+}
+
+/// The server's pid, or None while nothing answers.
+fn server_pid(port: u16, token: &str) -> Option<u64> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
+    let request = format!("GET /api/ping HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-CC-Token: {token}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut raw = String::new();
+    let _ = stream.read_to_string(&mut raw);
+    let body: Value = serde_json::from_str(raw.split_once("\r\n\r\n")?.1).ok()?;
+    body["pid"].as_u64()
+}
+
+#[test]
+fn server_restarts_on_an_update() {
+    let mut m = Machine::new("restart", 47817);
+    let installed = m.installed();
+    fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    fs::copy(EXE, &installed).unwrap();
+    m.seal();
+    let files: Files = Arc::default();
+    let base = release_server(47818, files.clone());
+    publish(&files, "v99.0.0", Path::new(EXE));
+
+    let started = m.command_at(&installed, &["--no-open"]).env("CC_SESSIONS_UPDATE_BASE", &base).stdin(Stdio::null()).output().unwrap();
+    assert!(started.status.success(), "{}", text(&started));
+    let token = m.token();
+    let before = server_pid(m.port, &token).expect("the server answers");
+
+    // The page's report preview: version and system, nothing about the home folder.
+    let (status, body) = m.get("/api/diagnostics", Some(&token), None);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(env!("CARGO_PKG_VERSION")), "{body}");
+    assert!(!body.contains(&*m.home.to_string_lossy()), "no paths: {body}");
+
+    let json = "Content-Type: application/json\r\n";
+    let (status, body) = m.post("/api/settings/auto-update", &token, json, r#"{"on":false}"#);
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["auto"], false);
+    let (status, body) = m.post("/api/update/check", &token, json, "{}");
+    assert_eq!(status, 200, "{body}");
+    let checked: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(checked["latest"], "v99.0.0", "{checked}");
+    assert_eq!(checked["available"], true);
+    assert_eq!(checked["managed"], true, "it runs from where the installer puts it");
+
+    // Update now: installed, and the server comes back as a new process.
+    let (status, body) = m.post("/api/update/install", &token, json, "{}");
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains("v99.0.0"), "{body}");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut after = None;
+    while Instant::now() < deadline {
+        if let Some(pid) = server_pid(m.port, &token).filter(|pid| *pid != before) {
+            after = Some(pid);
+            break;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    assert!(after.is_some(), "the server restarted on the new program: {}", fs::read_to_string(m.state.join("ui.log")).unwrap_or_default());
+    let (_, body) = m.get("/api/state", Some(&token), None);
+    let state: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(state["update"]["justUpdated"]["to"], "v99.0.0", "{}", state["update"]);
 }
 
 #[test]

@@ -166,6 +166,67 @@ pub fn display_command(launch: &Launch) -> String {
     shell::posix(launch, true)
 }
 
+/// Where the installer puts the program.
+pub fn installed_program() -> PathBuf {
+    home().join(".local").join("share").join("cc-sessions").join("cc-sessions")
+}
+
+/// Fetch a URL into a file with the system's curl, or wget.
+pub fn download(url: &str, to: &Path, timeout: Duration) -> Result<()> {
+    let agent = format!("cc-sessions/{}", env!("CARGO_PKG_VERSION"));
+    let seconds = timeout.as_secs().to_string();
+    let mut cmd = if let Some(curl) = which("curl") {
+        let mut cmd = Command::new(curl);
+        cmd.args(["-fsSL", "--max-time", &seconds, "-A", &agent, "-o"]).arg(to).arg(url);
+        cmd
+    } else if let Some(wget) = which("wget") {
+        let mut cmd = Command::new(wget);
+        cmd.args(["-q", "-T", &seconds, "-U", &agent, "-O"]).arg(to).arg(url);
+        cmd
+    } else {
+        return err("Neither curl nor wget was found, so it cannot download.");
+    };
+    let out = proc::run(&mut cmd, timeout + Duration::from_secs(5))?;
+    if !out.ok {
+        return err(format!("Download failed: {}", out.last_line()));
+    }
+    Ok(())
+}
+
+/// Put a new program in place of the installed one. The rename is atomic, and a copy that
+/// is running keeps the file it started from.
+pub fn replace_program(new: &Path, target: &Path) -> Result<()> {
+    let staged = target.with_extension("new");
+    fs::copy(new, &staged)?;
+    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))?;
+    fs::rename(&staged, target)?;
+    Ok(())
+}
+
+/// The system's release, for problem reports: "macOS 26.1" or "Linux 6.8.0".
+pub fn os_release() -> String {
+    let (program, args, name): (&str, &[&str], &str) =
+        if cfg!(target_os = "macos") { ("sw_vers", &["-productVersion"], "macOS") } else { ("uname", &["-r"], "Linux") };
+    let version = proc::run(Command::new(program).args(args), Duration::from_secs(5)).map(|o| o.stdout.trim().to_string()).unwrap_or_default();
+    format!("{name} {version}").trim().to_string()
+}
+
+/// An app by any of these names in /Applications or ~/Applications. Only Macs have them.
+pub fn find_app(names: &[&str]) -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    names.iter().flat_map(|name| [Path::new("/Applications").join(name), home().join("Applications").join(name)]).find(|path| path.is_dir())
+}
+
+/// Open a folder in a program: an app through `open -a`, a command by giving it the folder.
+pub fn open_folder_in(program: &Path, folder: &Path) -> Result<()> {
+    if program.extension().is_some_and(|ext| ext == "app") {
+        return spawn_quietly(Command::new("open").arg("-a").arg(program).arg(folder));
+    }
+    spawn_quietly(Command::new(program).arg(folder).current_dir(folder))
+}
+
 const ITERM_SCRIPT: &str = r#"
 on run argv
   tell application "iTerm"

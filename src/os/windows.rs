@@ -217,6 +217,70 @@ pub fn display_command(launch: &Launch) -> String {
     shell::powershell(launch)
 }
 
+/// Where the installer puts the program.
+pub fn installed_program() -> PathBuf {
+    install_dir().join("cc-sessions.exe")
+}
+
+/// Fetch a URL into a file with curl.exe (part of Windows 10 and later), or PowerShell.
+pub fn download(url: &str, to: &Path, timeout: Duration) -> Result<()> {
+    let agent = format!("cc-sessions/{}", env!("CARGO_PKG_VERSION"));
+    let mut cmd = if let Some(curl) = which("curl") {
+        let mut cmd = Command::new(curl);
+        cmd.args(["-fsSL", "--max-time", &timeout.as_secs().to_string(), "-A", &agent, "-o"]).arg(to).arg(url);
+        cmd
+    } else {
+        // The address and file go in as variables, so nothing in them is read as script.
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-Command"])
+            .arg("$ProgressPreference = 'SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -UserAgent $env:CC_AGENT -Uri $env:CC_URL -OutFile $env:CC_TO")
+            .env("CC_AGENT", &agent)
+            .env("CC_URL", url)
+            .env("CC_TO", to);
+        cmd
+    };
+    let out = proc::run(&mut cmd, timeout + Duration::from_secs(5))?;
+    if !out.ok {
+        return err(format!("Download failed: {}", out.last_line()));
+    }
+    Ok(())
+}
+
+/// Put a new program in place of the installed one. Windows will not overwrite a running
+/// program, but it lets it be renamed: the old one becomes cc-sessions.old.exe, removed later.
+pub fn replace_program(new: &Path, target: &Path) -> Result<()> {
+    let old = target.with_extension("old.exe");
+    let _ = fs::remove_file(&old);
+    if target.exists() {
+        fs::rename(target, &old)?;
+    }
+    if let Err(e) = fs::copy(new, target) {
+        let _ = fs::rename(&old, target);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
+/// The system's release, for problem reports: "Windows 10.0.26100".
+pub fn os_release() -> String {
+    let out = proc::run(Command::new("cmd").args(["/c", "ver"]), Duration::from_secs(5)).map(|o| o.stdout).unwrap_or_default();
+    let version = out.split("Version ").nth(1).map(|v| v.trim().trim_end_matches(']').to_string()).unwrap_or_default();
+    format!("Windows {version}").trim().to_string()
+}
+
+/// Apps are found through their commands on PATH here (see the Mac version).
+pub fn find_app(_names: &[&str]) -> Option<PathBuf> {
+    None
+}
+
+/// Open a folder in a program by giving it the folder, with no console window for its launcher.
+pub fn open_folder_in(program: &Path, folder: &Path) -> Result<()> {
+    let mut cmd = Command::new(program);
+    cmd.arg(folder).current_dir(folder).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    quiet(&mut cmd);
+    cmd.spawn().map(|_| ()).map_err(Error::from)
+}
+
 /// Run the launch in a new terminal window. Returns the terminal's name.
 pub fn open_terminal(launch: &Launch) -> Result<String> {
     let text = shell::cmd(launch);
