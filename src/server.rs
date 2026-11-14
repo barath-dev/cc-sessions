@@ -19,7 +19,7 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::accounts::{self, Account};
 use crate::claude::{self, AuthInfo};
 use crate::closing;
-use crate::history::{self, Artifact};
+use crate::history::{self, Artifact, Tokens};
 use crate::os;
 use crate::pins::{self, Pins};
 use crate::resume::{self, Target};
@@ -44,7 +44,15 @@ const UI: &[(&str, &str, &[u8])] = &[
     ("/app.js", "text/javascript; charset=utf-8", include_bytes!("../ui/app.js")),
     ("/theme.js", "text/javascript; charset=utf-8", include_bytes!("../ui/theme.js")),
     ("/style.css", "text/css; charset=utf-8", include_bytes!("../ui/style.css")),
+    ("/settings.js", "text/javascript; charset=utf-8", include_bytes!("../ui/settings.js")),
+    ("/icons.js", "text/javascript; charset=utf-8", include_bytes!("../ui/icons.js")),
+    ("/settings.css", "text/css; charset=utf-8", include_bytes!("../ui/settings.css")),
     ("/favicon.svg", "image/svg+xml", include_bytes!("../ui/favicon.svg")),
+    // The Finder view: the same sessions as a Finder-style browser. /concept is its first address.
+    ("/finder", "text/html; charset=utf-8", include_bytes!("../ui/concept.html")),
+    ("/concept", "text/html; charset=utf-8", include_bytes!("../ui/concept.html")),
+    ("/concept.js", "text/javascript; charset=utf-8", include_bytes!("../ui/concept.js")),
+    ("/concept.css", "text/css; charset=utf-8", include_bytes!("../ui/concept.css")),
 ];
 
 pub fn port() -> u16 {
@@ -90,6 +98,8 @@ fn same(a: &str, b: &str) -> bool {
 }
 
 type Listing = Arc<(Vec<Session>, BTreeMap<String, String>)>;
+/// One account's tokens by the hour and by model.
+type Usage = (BTreeMap<i64, Tokens>, BTreeMap<String, Tokens>);
 
 struct SessionCache {
     data: Option<Listing>,
@@ -246,12 +256,39 @@ impl App {
                     "firstPrompt": item.first_prompt,
                     "lastPrompts": item.last_prompts,
                     "promptText": item.prompt_text,
+                    "tokens": item.tokens,
                     "live": live,
                     "resumeCommand": (!item.cwd.is_empty()).then(|| resume::display_command(acc, &target)),
                 }))
             })
             .collect();
         Ok(json!({ "items": items }))
+    }
+
+    /// Tokens by account: by the hour (hours since 1970, UTC, so the page can
+    /// put them on its own days) and by model. Each as [input, output, cache write, cache read].
+    fn usage(&self) -> Result<Value> {
+        let row = |t: &Tokens| json!([t.input, t.output, t.cache_write, t.cache_read]);
+        let mut by_account: BTreeMap<String, Usage> = BTreeMap::new();
+        for item in history::history_items()? {
+            let (hours, models) = by_account.entry(item.account.clone()).or_default();
+            for (hour, tokens) in &item.hours {
+                hours.entry(*hour).or_default().add(tokens);
+            }
+            for (model, tokens) in &item.models {
+                models.entry(model.clone()).or_default().add(tokens);
+            }
+        }
+        let accounts: serde_json::Map<String, Value> = by_account
+            .into_iter()
+            .map(|(name, (hours, models))| {
+                let hours: Vec<Value> =
+                    hours.iter().map(|(hour, t)| json!([hour, t.input, t.output, t.cache_write, t.cache_read])).collect();
+                let models: serde_json::Map<String, Value> = models.iter().map(|(m, t)| (m.clone(), row(t))).collect();
+                (name, json!({ "hours": hours, "models": models }))
+            })
+            .collect();
+        Ok(json!({ "accounts": accounts }))
     }
 
     // -- actions
@@ -463,7 +500,11 @@ fn static_file(path: &str) -> Option<(&'static str, Vec<u8>)> {
     let (_, content_type, bytes) = UI.iter().find(|(route, ..)| *route == path)?;
     // For working on the page without rebuilding.
     if let Some(dir) = std::env::var_os("CC_SESSIONS_UI_DIR") {
-        let name = if path == "/" { "index.html" } else { &path[1..] };
+        let name = match path {
+            "/" => "index.html",
+            "/finder" | "/concept" => "concept.html",
+            _ => &path[1..],
+        };
         if let Ok(bytes) = fs::read(PathBuf::from(dir).join(name)) {
             return Some((content_type, bytes));
         }
@@ -500,6 +541,7 @@ fn handle(app: &App, mut request: Request) {
             "/api/ping" => Ok(json!({ "ok": true, "app": "cc-sessions", "version": VERSION, "pid": std::process::id() })),
             "/api/state" => app.state(),
             "/api/history" => app.history(),
+            "/api/usage" => app.usage(),
             _ => return respond_json(request, 404, &json!({ "error": "Not found." })),
         }
     } else if *request.method() == Method::Post {

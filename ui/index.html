@@ -7,7 +7,10 @@
   <title>Claude Sessions</title>
   <link rel="icon" href="/favicon.svg">
   <script src="/theme.js"></script>
+  <script src="/icons.js"></script>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/settings.css">
+  <script src="/settings.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -16,17 +19,12 @@
     <h1 class="brand">Claude Sessions</h1>
     <nav class="tabs" aria-label="Views">
       <button type="button" class="tab" data-tab="sessions">Sessions</button>
-      <button type="button" class="tab" data-tab="accounts">Accounts</button>
     </nav>
     <div class="conn">
+      <button type="button" class="btn btn-quiet" id="open-settings"><span class="ic" data-icon="settings"></span>Settings</button>
       <button type="button" class="btn btn-quiet switch" id="alerts" role="switch" aria-checked="false">Alerts</button>
-      <select id="theme" class="theme" aria-label="Theme">
-        <option value="system">Match system</option>
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
-      </select>
       <span class="conn-state" id="conn-state" data-state="connecting">Connecting</span>
-      <button type="button" class="btn" id="disconnect">Disconnect</button>
+      <button type="button" class="btn" id="disconnect"><span class="ic" data-icon="power"></span>Disconnect</button>
     </div>
   </header>
 

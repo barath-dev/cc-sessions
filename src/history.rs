@@ -1,7 +1,7 @@
 //! Every saved conversation, read from the transcripts Claude Code keeps.
 //! Transcripts are only ever opened for reading.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -19,7 +19,7 @@ use crate::util::{iso_to_ms, path_str, squash, Error, Result};
 
 const PREVIEW_CHARS: usize = 300;
 /// Raise when `Entry` gains something old cache entries do not have.
-const CACHE_VERSION: u32 = 3;
+const CACHE_VERSION: u32 = 4;
 /// How many prompts are kept for searching: this many from each end of a conversation.
 const SEARCH_PROMPTS: usize = 20;
 const ARTIFACT_URLS: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
@@ -36,6 +36,25 @@ pub struct Artifact {
     pub path: Option<String>,
 }
 
+/// Tokens used, as Claude Code records them on each reply.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Tokens {
+    pub input: u64,
+    pub output: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+}
+
+impl Tokens {
+    pub fn add(&mut self, other: &Tokens) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_write += other.cache_write;
+        self.cache_read += other.cache_read;
+    }
+}
+
 /// What is remembered about one transcript between runs.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -50,6 +69,10 @@ pub struct Entry {
     /// What the person typed, one prompt to a line, for the page's search.
     pub prompt_text: String,
     pub artifacts: Vec<Artifact>,
+    pub tokens: Tokens,
+    /// Tokens by the hour they were used in (hours since 1970, UTC), for the usage view.
+    pub hours: Vec<(i64, Tokens)>,
+    pub models: BTreeMap<String, Tokens>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unreadable: bool,
 }
@@ -87,6 +110,11 @@ pub struct HistoryItem {
     #[serde(skip)]
     pub prompt_text: String,
     pub artifacts: Vec<Artifact>,
+    pub tokens: Tokens,
+    #[serde(skip)]
+    pub hours: Vec<(i64, Tokens)>,
+    #[serde(skip)]
+    pub models: BTreeMap<String, Tokens>,
 }
 
 fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
@@ -172,6 +200,43 @@ fn note_artifact(artifacts: &mut Vec<Artifact>, source: &Value, url_key: &str, a
     }
 }
 
+/// The id of the reply a line belongs to. Claude Code writes one line per part
+/// of a reply, each carrying the reply's whole usage, so a reply counts once.
+fn reply_id(line: &[u8]) -> Option<&[u8]> {
+    let start = memmem::find(line, b"\"id\":\"msg_")? + 6;
+    let len = memchr::memchr(b'"', &line[start..])?;
+    Some(&line[start..start + len])
+}
+
+fn note_usage(entry: &mut Entry, rec: &Value) {
+    let Some(message) = rec.get("message") else { return };
+    let model = message.get("model").and_then(Value::as_str).unwrap_or("");
+    // "<synthetic>" replies are written by Claude Code itself, not answered by a model.
+    if model.starts_with('<') {
+        return;
+    }
+    let Some(usage) = message.get("usage") else { return };
+    let count = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let used = Tokens {
+        input: count("input_tokens"),
+        output: count("output_tokens"),
+        cache_write: count("cache_creation_input_tokens"),
+        cache_read: count("cache_read_input_tokens"),
+    };
+    if used == Tokens::default() {
+        return;
+    }
+    entry.tokens.add(&used);
+    entry.models.entry(model.to_string()).or_default().add(&used);
+    if let Some(at) = rec.get("timestamp").and_then(Value::as_str).and_then(iso_to_ms) {
+        let hour = at.div_euclid(3_600_000);
+        match entry.hours.last_mut() {
+            Some((last, tokens)) if *last == hour => tokens.add(&used),
+            _ => entry.hours.push((hour, used)),
+        }
+    }
+}
+
 /// Read one saved conversation into a small summary. Never writes to it.
 fn index_transcript(path: &Path) -> Entry {
     let mut entry = Entry {
@@ -180,6 +245,7 @@ fn index_transcript(path: &Path) -> Entry {
     };
     let (mut custom, mut ai, mut agent) = (None, None, None);
     let mut typed: Vec<String> = Vec::new();
+    let mut replies: HashSet<Vec<u8>> = HashSet::new();
     let Ok(file) = File::open(path) else {
         entry.unreadable = true;
         return entry;
@@ -205,6 +271,17 @@ fn index_transcript(path: &Path) -> Entry {
         let has_artifact =
             is_user && memmem::find(&line, b"\"toolUseResult\"").is_some() && memmem::find(&line, b"claude.ai/").is_some();
         let needs_meta = entry.cwd.is_none() || entry.started_at.is_none();
+        // A model's reply, with the tokens it used. Each reply is read once, however many lines it spans.
+        if memmem::find(&line, b"\"type\":\"assistant\"").is_some() && memmem::find(&line, b"\"usage\"").is_some() {
+            if reply_id(&line).is_none_or(|id| replies.insert(id.to_vec())) {
+                if let Ok(rec) = serde_json::from_slice::<Value>(&line) {
+                    note_usage(&mut entry, &rec);
+                }
+            }
+            if !needs_meta {
+                continue;
+            }
+        }
         if !(is_title || is_link || is_user || (needs_meta && memmem::find(&line, b"\"cwd\"").is_some())) {
             continue;
         }
@@ -325,6 +402,9 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 last_prompts: entry.last_prompts.clone(),
                 prompt_text: entry.prompt_text.clone(),
                 artifacts: entry.artifacts.clone(),
+                tokens: entry.tokens,
+                hours: entry.hours.clone(),
+                models: entry.models.clone(),
             });
             fresh.insert(key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry });
         }
@@ -413,6 +493,20 @@ mod tests {
         let links: Vec<(&str, &str)> = entry.artifacts.iter().map(|a| (a.url.as_str(), a.title.as_str())).collect();
         assert_eq!(links, [("https://claude.ai/artifact/6pwcDR94", "The plan"), ("https://claude.ai/artifact/Puen6az3", "Other page")]);
         assert_eq!(entry.artifacts[0].updated_at, Some(1794291720000));
+
+        // One reply over three lines counts once; Claude Code's own "<synthetic>" replies not at all.
+        let reply = |part: &str| format!(
+            r#"{{"type":"assistant","timestamp":"2026-11-10T06:30:00.000Z","message":{{"model":"claude-opus-5-5","id":"msg_01abc","content":[{{"type":"text","text":"{part}"}}],"usage":{{"input_tokens":10,"output_tokens":200,"cache_creation_input_tokens":3000,"cache_read_input_tokens":40000}}}}}}"#
+        );
+        let mut lines: Vec<String> = ["a", "b", "c"].iter().map(|p| reply(p)).collect();
+        lines.push(r#"{"type":"assistant","timestamp":"2026-11-10T07:10:00.000Z","message":{"model":"claude-opus-5-5","id":"msg_02def","usage":{"input_tokens":1,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":100}}}"#.into());
+        lines.push(r#"{"type":"assistant","message":{"model":"<synthetic>","id":"msg_03","usage":{"input_tokens":0,"output_tokens":0}}}"#.into());
+        fs::write(&path, lines.join("\n")).unwrap();
+        let entry = index_transcript(&path);
+        assert_eq!(entry.tokens, Tokens { input: 11, output: 205, cache_write: 3000, cache_read: 40100 });
+        assert_eq!(entry.models.len(), 1);
+        let hours: Vec<i64> = entry.hours.iter().map(|(h, _)| *h).collect();
+        assert_eq!(hours, [1794292200000 / 3_600_000, 1794294600000 / 3_600_000]);
 
         // A long conversation keeps its first and last prompts for searching.
         let many: Vec<String> = (0..50)

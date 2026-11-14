@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Claude Sessions</title>
+  <link rel="icon" href="/favicon.svg">
+  <script src="/theme.js"></script>
+  <script src="/icons.js"></script>
+  <link rel="stylesheet" href="/concept.css">
+  <link rel="stylesheet" href="/settings.css">
+  <script src="/settings.js" defer></script>
+  <script src="/concept.js" defer></script>
+</head>
+<body>
+  <div class="win">
+    <aside class="sb" id="sb" aria-label="Places"></aside>
+    <main class="main">
+      <header class="tb" id="tb"></header>
+      <div class="content" id="content" tabindex="0" role="listbox" aria-label="Folders and sessions"></div>
+      <nav class="pathbar" id="pathbar" aria-label="Path"></nav>
+      <footer class="statusbar" id="statusbar"></footer>
+    </main>
+  </div>
+
+  <div class="menu" id="menu" role="menu" hidden></div>
+  <div class="ql-back" id="ql" hidden></div>
+  <dialog class="sheet" id="sheet" aria-labelledby="sheet-title"></dialog>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+  <div class="tip" id="tip" role="tooltip" hidden></div>
+</body>
+</html>

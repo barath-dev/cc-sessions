@@ -34,7 +34,6 @@ const state = {
   renaming: null,      // { key, where } while a name is being typed
   sort: store('cc-sort') === 'name' ? 'name' : 'active',
   alerts: store('cc-alerts') === 'on',
-  aliasNotice: false,
   offline: null,       // null | 'stopped' | 'disconnected' | 'token'
   signature: '',
 };
@@ -126,15 +125,8 @@ function autoColor(index) {
 }
 
 // Small line icons, drawn in the current text colour. Fixed markup, nothing from data.
-const ICONS = {
-  edit: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.9 2.4a1.6 1.6 0 0 1 2.3 0l.4.4a1.6 1.6 0 0 1 0 2.3L5.8 12.9 2.5 13.5l.6-3.3z M9.6 3.7l2.7 2.7" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
-};
-
-function icon(name) {
-  const el = h('span', { class: 'icon' });
-  el.innerHTML = ICONS[name];
-  return el;
-}
+// An icon from icons.js, drawn in the current text colour.
+const icon = (name) => window.ccIcon(name);
 
 function accountTag(name) {
   return h('span', { class: 'acct', style: { '--acct': accountColor(name) } }, name);
@@ -170,11 +162,15 @@ function toast(message, kind = 'ok') {
 }
 
 async function copyText(text, button) {
-  button.dataset.label = button.dataset.label || button.textContent;
   try {
     await navigator.clipboard.writeText(text);
-    button.textContent = 'Copied';
-    setTimeout(() => { button.textContent = button.dataset.label; }, 1500);
+    if (button) {
+      button.dataset.label = button.dataset.label || button.lastChild.textContent;
+      button.lastChild.textContent = 'Copied';
+      setTimeout(() => { button.lastChild.textContent = button.dataset.label; }, 1500);
+    } else {
+      toast('Copied the command that resumes it.');
+    }
   } catch {
     toast('Could not copy. Select the command and copy it by hand.', 'error');
   }
@@ -182,7 +178,7 @@ async function copyText(text, button) {
 
 function commandBlock(command) {
   return h('div', { class: 'command-row' }, h('pre', { class: 'command' }, command),
-    h('button', { type: 'button', class: 'btn btn-small', onclick: (event) => copyText(command, event.currentTarget) }, 'Copy'));
+    h('button', { type: 'button', class: 'btn btn-small', onclick: (event) => copyText(command, event.currentTarget) }, icon('copy'), h('span', {}, 'Copy')));
 }
 
 // ----------------------------------------------------------------------- API
@@ -194,6 +190,7 @@ if (token) {
 } else {
   token = store('cc-token') || '';
 }
+window.ccToken = token;   // for Settings, which talks to the server too
 
 async function api(path, body) {
   let response;
@@ -310,7 +307,7 @@ function showDialog({ title, body = [], confirmLabel = 'Confirm', danger = false
 function field(label, name, value = '', hint = '') {
   return h('label', { class: 'field' },
     h('span', { class: 'field-label' }, label),
-    h('input', { type: 'text', name, value, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' }),
+    h('input', { type: 'text', name, value, autocomplete: 'off', autocapitalize: 'off', spellcheck: false }),
     hint && h('span', { class: 'field-hint' }, hint));
 }
 
@@ -371,15 +368,19 @@ async function act(run, done) {
 const wide = matchMedia('(min-width: 1180px) and (hover: hover)');
 
 function viewHash() {
-  if (state.tab === 'accounts') return '#accounts';
   if (state.folder === 'needs') return '#needs';
   return state.folder ? `#f=${encodeURIComponent(state.folder)}` : '';
 }
 
 function readHash() {
   const hash = location.hash;
-  state.tab = hash === '#accounts' ? 'accounts' : 'sessions';
-  if (state.tab === 'accounts') return;
+  state.tab = 'sessions';
+  // The old Accounts tab lives in Settings now.
+  if (hash === '#accounts') {
+    history.replaceState(null, '', location.pathname);
+    setTimeout(() => window.ccSettings && window.ccSettings.open('accounts'));
+    return;
+  }
   let folder = '';
   try {
     if (hash.startsWith('#f=')) folder = decodeURIComponent(hash.slice(3));
@@ -444,8 +445,7 @@ function render(force) {
   if (state.renaming && !force) return;
   if (!$('#list')) return mount();
   const mark = focusMark();
-  if (state.tab === 'sessions') renderSessions();
-  else renderAccounts();
+  renderSessions();
   focusRestore(mark);
 }
 
@@ -478,8 +478,9 @@ function toolbar() {
   const filters = state.filters;
   const placeholder = 'Search name, folder, prompt or artifact';
   return h('div', { class: 'toolbar' },
-    h('input', { type: 'search', class: 'search', placeholder, 'aria-label': placeholder, value: filters.q,
-      oninput: (e) => { filters.q = e.target.value; render(); } }),
+    h('label', { class: 'search' }, icon('search'),
+      h('input', { type: 'search', placeholder, 'aria-label': placeholder, value: filters.q,
+        oninput: (e) => { filters.q = e.target.value; render(); } })),
     h('select', { 'aria-label': 'Sort', onchange: (e) => {
       state.sort = e.target.value;
       store('cc-sort', state.sort);
@@ -655,7 +656,7 @@ function renderSide(entries, tree) {
         state.collapsed = new Set(allClosed ? [] : parents);
         store('cc-collapsed', JSON.stringify(parents.filter((id) => state.collapsed.has(id))));
         render();
-      } }, allClosed ? 'Expand all' : 'Collapse all')),
+      } }, icon(allClosed ? 'chevrons-up-down' : 'chevrons-down-up'), allClosed ? 'Expand all' : 'Collapse all')),
     rows.length > 0 && h('div', { role: 'tree', 'aria-labelledby': 'folders-heading', class: 'side-tree' }, rows),
   ].filter(Boolean)));
 }
@@ -722,7 +723,7 @@ function sideRow(node, depth, kind, parent = '') {
     // The arrow is for the mouse; the keyboard opens and closes folders with Right and Left.
     inTree && node.kids.length
       ? h('button', { type: 'button', class: 'side-twist', 'aria-expanded': String(!collapsed), 'aria-hidden': 'true', tabIndex: -1,
-        onclick: () => toggleFolder(node.id) })
+        onclick: () => toggleFolder(node.id) }, icon('chevron-right'))
       : h('span', { class: 'side-twist', 'aria-hidden': 'true' }),
     h('button', { type: 'button', class: 'side-item', 'data-id': node.id,
       ...(inTree
@@ -733,7 +734,7 @@ function sideRow(node, depth, kind, parent = '') {
       'aria-label': `${node.label}, ${plural(node.all.length, 'session')}${openText ? `, ${openText}` : ''}`,
       title: kind === 'view' ? node.hint || null : folderPath(node.id) || null,
       onclick: () => { if (inTree) state.treeCursor = node.id; state.sideOpen = false; go({ folder: node.id }); } },
-      kind !== 'view' && h('span', { class: 'side-icon', 'aria-hidden': 'true' }),
+      icon(kind !== 'view' ? (selected ? 'folder-open' : 'folder') : node.id === 'needs' ? 'bell-ring' : 'layers'),
       h('span', { class: 'side-name' }, node.label),
       !needs && open.length > 0 && h('span', { class: 'side-open', 'data-status': pressing, title: openText }),
       h('span', { class: `side-count${needs && node.all.length ? ' is-hot' : ''}` }, String(node.all.length))));
@@ -795,14 +796,14 @@ function renderSessions() {
     h('span', { class: 'count' }, `${plural(scope.length, 'session')}${open.length && !needs ? `, ${open.length} open` : ''}`),
     h('div', { class: 'pane-actions' },
       folder && folder !== '?' && h('button', { type: 'button', class: 'btn btn-small',
-        onclick: () => pin({ folder: path }, !pinnedFolder) }, pinnedFolder ? 'Unpin folder' : 'Pin folder'),
+        onclick: () => pin({ folder: path }, !pinnedFolder) }, icon(pinnedFolder ? 'pin-off' : 'pin'), pinnedFolder ? 'Unpin folder' : 'Pin folder'),
       folder && open.length > 1 && h('button', { type: 'button', class: 'btn btn-small', onclick: () => closeMany({
         title: 'Close sessions in this folder?',
         where: path,
         note: 'Ticked sessions are stopped. Their conversations are kept and can be resumed. ' +
           'Interactive sessions are open in a terminal, so they start unticked.',
         sessions: open.map((e) => e.session),
-      }) }, 'Close all open here')));
+      }) }, icon('circle-stop'), 'Close all open here')));
 
   const needle = filters.q.trim().toLowerCase();
   const hits = new Map();
@@ -850,8 +851,8 @@ function renderSessions() {
       note: 'Ticked sessions are stopped. Their conversations are kept and can be resumed.',
       sessions: ticked,
       tickInteractive: true,
-    }) }, 'Close selected'),
-    h('button', { type: 'button', class: 'btn btn-small', onclick: () => { state.ticked.clear(); render(); } }, 'Clear'))] : []));
+    }) }, icon('circle-stop'), 'Close selected'),
+    h('button', { type: 'button', class: 'btn btn-small', onclick: () => { state.ticked.clear(); render(); } }, icon('x'), 'Clear'))] : []));
   $('#list').classList.toggle('is-ticking', ticked.length > 0);
 
   const reading = !state.history && !state.historyError;
@@ -866,7 +867,7 @@ function renderSessions() {
     const place = needs ? 'Needs you' : folder ? folderPath(folder) : '';
     const clear = () => {
       Object.assign(filters, { q: '', account: '', status: 'all' });
-      const search = $('.search');
+      const search = $('.search input');
       if (search) search.value = '';
       render();
     };
@@ -877,8 +878,8 @@ function renderSessions() {
     $('#list').replaceChildren(h('div', { class: 'empty' },
       h('p', {}, message),
       !reading && all.length > 0 && (active.length > 0 || place) && h('div', { class: 'empty-actions' },
-        active.length > 0 && h('button', { type: 'button', class: 'btn', onclick: clear }, 'Clear filters'),
-        place && h('button', { type: 'button', class: 'btn', onclick: () => go({ folder: '' }) }, 'Look in all folders'))));
+        active.length > 0 && h('button', { type: 'button', class: 'btn', onclick: clear }, icon('filter-x'), 'Clear filters'),
+        place && h('button', { type: 'button', class: 'btn', onclick: () => go({ folder: '' }) }, icon('folders'), 'Look in all folders'))));
     return;
   }
 
@@ -916,13 +917,13 @@ function renderSessions() {
               note: 'Ticked sessions are stopped. Their conversations are kept and can be resumed.',
               sessions: finished,
               tickInteractive: true,
-            }) }, `Close all ${finished.length} finished`)
+            }) }, icon('circle-stop'), `Close all ${finished.length} finished`)
             : h('span', { class: 'count' }, String(entries.length))),
         entries.map((e) => entryRow(e, folderOf(e), hits.get(e.key))));
     }),
     (hiddenEmpty > 0 || shownEmpty > 0) && h('p', { class: 'list-more' },
       h('button', { type: 'button', class: 'btn-link', onclick: () => { state.showEmpty = !state.showEmpty; render(); } },
-        state.showEmpty ? 'Hide empty conversations' : `Show ${plural(hiddenEmpty, 'empty conversation')}`),
+        icon('eye'), state.showEmpty ? 'Hide empty conversations' : `Show ${plural(hiddenEmpty, 'empty conversation')}`),
       h('span', { class: 'quiet' }, ' Opened and never used: no prompts.')),
     h('p', { class: 'quiet list-note' }, reading ? 'Reading saved conversations…'
       : `Claude Code itself deletes conversations after ${span} days without activity ` +
@@ -1008,10 +1009,10 @@ function entryRow(e, folder, hit) {
     h('div', { class: 'row-actions' },
       // Rename sits with the other actions, and stays on every row of a narrow screen, where touch cannot double-click.
       e.sessionId && h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Rename ${e.name}`,
-        title: 'Rename (or double-click the name)', onclick: () => startRename(e, 'row') }, icon('edit')),
-      e.command && h('button', { type: 'button', class: 'btn btn-small row-quiet', title: 'Copy the command that resumes it',
-        onclick: (event) => copyText(e.command, event.currentTarget) }, 'Copy command'),
-      pinButton(e, 'row-quiet'),
+        title: 'Rename (or double-click the name)', onclick: () => startRename(e, 'row') }, icon('pencil')),
+      e.command && h('button', { type: 'button', class: 'icon-btn row-quiet', 'aria-label': `Copy the command that resumes ${e.name}`,
+        title: 'Copy the command that resumes it', onclick: () => copyText(e.command) }, icon('copy')),
+      pinButton(e, true),
       mainAction(e)),
     selected && !wide.matches && entryDetails(e, 'row'));
   if (e.key !== rowCursor) for (const control of row.querySelectorAll(FOCUSABLE)) control.tabIndex = -1;
@@ -1021,16 +1022,19 @@ function entryRow(e, folder, hit) {
 // Close for a session that is open, Resume for one that is not.
 function mainAction(e) {
   const { session: s, item } = e;
-  const button = (label, onclick) => h('button', { type: 'button', class: 'btn btn-small', onclick }, label);
-  if (e.open) return button('Close', () => closeOne(s));
-  if (s) return button('Resume', () => resumeSession(s));
-  return item.resumeCommand ? button('Resume', () => resumeHistory(item)) : null;
+  const button = (glyph, label, onclick) => h('button', { type: 'button', class: 'btn btn-small', onclick }, icon(glyph), label);
+  if (e.open) return button('circle-stop', 'Close', () => closeOne(s));
+  if (s) return button('play', 'Resume', () => resumeSession(s));
+  return item.resumeCommand ? button('play', 'Resume', () => resumeHistory(item)) : null;
 }
 
-function pinButton(e, extra = '') {
-  return e.sessionId && h('button', { type: 'button', class: `btn btn-small ${extra}`,
+// On a row it is an icon among the quick actions; in the details it has its word too.
+function pinButton(e, quiet = false) {
+  const label = e.pinned ? 'Unpin' : 'Pin';
+  return e.sessionId && h('button', { type: 'button', class: quiet ? 'icon-btn row-quiet' : 'btn btn-small',
+    'aria-label': quiet ? `${label} ${e.name}` : null,
     title: e.pinned ? 'Take it off the top of the list' : 'Keep it at the top of the list',
-    onclick: () => pin({ account: e.account, sessionId: e.sessionId }, !e.pinned) }, e.pinned ? 'Unpin' : 'Pin');
+    onclick: () => pin({ account: e.account, sessionId: e.sessionId }, !e.pinned) }, icon(e.pinned ? 'pin-off' : 'pin'), !quiet && label);
 }
 
 async function pin(what, pinned) {
@@ -1071,7 +1075,7 @@ function renameBox(e) {
     if (save && value !== e.name && (value || e.renamed)) saveName(e, value);
   };
   const box = h('input', { type: 'text', class: 'rename', value: e.name, 'aria-label': 'Session name',
-    placeholder: 'Empty goes back to Claude Code\'s title', autocomplete: 'off', spellcheck: 'false',
+    placeholder: 'Empty goes back to Claude Code\'s title', autocomplete: 'off', spellcheck: false,
     onclick: (event) => event.stopPropagation(),
     ondblclick: (event) => event.stopPropagation(),
     onkeydown: (event) => {
@@ -1120,7 +1124,7 @@ function renderPanel(entries) {
       h('div', { class: 'panel-top' },
         h('h2', { class: 'panel-name' }, nameEl(e, 'panel')),
         h('button', { type: 'button', class: 'panel-close', 'aria-label': 'Close details', title: 'Close (Esc)',
-          onclick: () => select(null) }, '×')),
+          onclick: () => select(null) }, icon('x'))),
       h('div', { class: 'panel-meta' },
         accountTag(e.account), statusEl(e),
         h('span', { class: 'row-time', title: fullDate(e.at) }, recentDate(e.at)))),
@@ -1138,8 +1142,8 @@ function entryDetails(e, where) {
     h('div', { class: 'details-actions' },
       mainAction(e),
       e.command && h('button', { type: 'button', class: 'btn btn-small',
-        onclick: (event) => copyText(e.command, event.currentTarget) }, 'Copy command'),
-      e.sessionId && h('button', { type: 'button', class: 'btn btn-small', onclick: () => startRename(e, where) }, 'Rename'),
+        onclick: () => copyText(e.command) }, icon('copy'), 'Copy command'),
+      e.sessionId && h('button', { type: 'button', class: 'btn btn-small', onclick: () => startRename(e, where) }, icon('pencil'), 'Rename'),
       pinButton(e)),
     h('dl', { class: 'facts' }, [
       ['Account', `${e.account}${account.email ? ` (${account.email})` : ''}`],
@@ -1300,203 +1304,25 @@ function noticeChanges(before, after) {
   }
 }
 
-// -- accounts
-
-function renderAccounts() {
-  const active = activeAccounts();
-  const removed = state.data.accounts.filter((a) => a.removed);
-  // Through h() so the conditional sections that are off drop out.
-  $('#list').replaceChildren(...h('div', {},
-    h('div', { class: 'toolbar' },
-      h('p', { class: 'count' }, plural(active.length, 'account')),
-      h('button', { type: 'button', class: 'btn btn-primary', onclick: () => addAccount() }, 'Add account')),
-    state.aliasNotice && h('p', { class: 'notice notice-action' },
-      h('span', {}, `Shortcuts changed. ${(state.data.platform || {}).aliasHint || 'Open a new terminal to use them.'}`),
-      h('button', { type: 'button', class: 'btn btn-small', onclick: () => { state.aliasNotice = false; render(); } }, 'Dismiss')),
-    h('div', { class: 'accounts' }, active.map(accountCard)),
-    state.data.unregistered.length > 0 && h('section', { class: 'aside' },
-      h('h2', {}, 'Folders not registered as accounts'),
-      state.data.unregistered.map((folder) => h('div', { class: 'aside-row' },
-        h('code', {}, folder),
-        h('button', { type: 'button', class: 'btn btn-small', onclick: () => addAccount(folder) }, 'Add as account')))),
-    removed.length > 0 && h('section', { class: 'aside' },
-      h('h2', {}, 'Removed accounts'),
-      h('p', { class: 'quiet' }, 'Their folders, logins and history are still on disk. Only you can delete them.'),
-      removed.map((a) => h('div', { class: 'aside-row' },
-        accountTag(a.name), h('code', {}, a.dir),
-        h('button', { type: 'button', class: 'btn btn-small', onclick: () => restoreAccount(a) }, 'Restore'))))).childNodes);
-}
-
-function accountCard(a) {
-  const start = a.alias || (a.isDefault ? 'claude' : null);
-  return h('article', { class: 'account', style: { '--acct': accountColor(a.name) } },
-    h('header', { class: 'account-head' },
-      h('h2', {}, a.name),
-      h('span', { class: 'account-open' }, plural(a.openSessions, 'open session')),
-      h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Edit ${a.name}`, title: 'Edit name, alias, colour or login',
-        onclick: () => editAccount(a) }, icon('edit'))),
-    h('dl', { class: 'facts' },
-      h('dt', {}, 'Login'),
-      h('dd', {}, a.loggedIn ? a.email : h('span', { class: 'warn' }, 'Not logged in')),
-      a.loggedIn && [h('dt', {}, 'Organisation'), h('dd', {}, a.org || 'None')],
-      a.loggedIn && [h('dt', {}, 'Plan'), h('dd', {}, a.plan || 'Unknown')],
-      h('dt', {}, 'Start with'),
-      h('dd', {}, start ? h('code', {}, start) : 'No alias'),
-      h('dt', {}, 'Folder'),
-      h('dd', {}, h('code', {}, a.dir)),
-      h('dt', { title: 'Claude Code deletes older conversations by itself (its cleanupPeriodDays setting)' }, 'History kept'),
-      h('dd', {}, `${a.retentionDays} days`)),
-    !a.loggedIn && h('div', { class: 'account-actions' },
-      h('button', { type: 'button', class: 'btn btn-primary btn-small', onclick: () => login(a, false) }, 'Log in')));
-}
-
-// Swatches from the palette, any other colour from the system picker, and a
-// way back to the colour the account gets by its place. `chosen` is '' for that one.
-function colorField(a, chosen, onPick) {
-  const auto = autoColor(state.data.accounts.findIndex((x) => x.name === a.name));
-  const group = h('div', { class: 'swatches', role: 'group', 'aria-label': 'Colour' });
-  const draw = () => {
-    const current = chosen || auto;
-    const custom = !ACCOUNT_COLORS.includes(current);
-    const pick = (color) => { chosen = color; onPick(color); draw(); };
-    group.replaceChildren(
-      ...ACCOUNT_COLORS.map((color) => h('button', { type: 'button', class: 'swatch', style: { '--swatch': color },
-        'aria-pressed': String(color === current), 'aria-label': color,
-        onclick: () => pick(color === auto ? '' : color) })),
-      h('label', { class: `swatch swatch-custom${custom ? ' is-on' : ''}`, style: custom ? { '--swatch': current } : {},
-        title: 'Any other colour' },
-        h('input', { type: 'color', value: current, 'aria-label': 'Any other colour', onchange: (event) => pick(event.target.value) })),
-      chosen && h('button', { type: 'button', class: 'btn-link', onclick: () => pick('') }, 'Automatic'));
-  };
-  draw();
-  return h('div', { class: 'field' },
-    h('span', { class: 'field-label' }, 'Colour'),
-    group,
-    h('span', { class: 'field-hint' }, 'Marks this account everywhere in Claude Sessions.'));
-}
-
-async function addAccount(folder = '') {
-  const suggested = folder ? folder.replace(/^.*\/\.claude-/, '').toLowerCase().replace(/[^a-z0-9-]/g, '-') : '';
-  const name = field('Name', 'name', suggested, 'Lowercase letters, digits and dashes. Shown everywhere in this app.');
-  const alias = field('Alias', 'alias', suggested ? `claude-${suggested}` : '', 'The command you type to start Claude Code as this account.');
-  const dir = field('Folder', 'folder', folder, 'Where this account keeps its login and history. An existing folder is used as it is.');
-  const [nameInput, aliasInput, dirInput] = [name, alias, dir].map((el) => el.querySelector('input'));
-  // Fill alias and folder from the name until the person edits them.
-  let aliasEdited = false;
-  let dirEdited = Boolean(folder);
-  aliasInput.addEventListener('input', () => { aliasEdited = true; });
-  dirInput.addEventListener('input', () => { dirEdited = true; });
-  nameInput.addEventListener('input', () => {
-    if (!aliasEdited) aliasInput.value = nameInput.value ? `claude-${nameInput.value}` : '';
-    if (!dirEdited) dirInput.value = nameInput.value ? `~/.claude-${nameInput.value}` : '';
-  });
-  const added = await showDialog({
-    title: 'Add account',
-    body: [name, alias, dir],
-    confirmLabel: 'Add account',
-    onConfirm: () => api('/api/accounts/add', {
-      name: nameInput.value.trim(), alias: aliasInput.value.trim(), folder: dirInput.value.trim(),
-    }),
-  });
-  if (!added) return;
-  state.aliasNotice = true;
-  toast(`Added ${added.name}. ${added.created ? 'Log in to finish setting it up.' : `Using the existing folder ${added.dir}.`}`);
-  refresh();
-}
-
-// Everything about an account that can be changed, in one dialog. Changing the
-// login and removing the account are their own steps, with their own warnings.
-async function editAccount(a) {
-  const name = field('Name', 'name', a.name, 'Lowercase letters, digits and dashes.');
-  const alias = field('Alias', 'alias', a.alias || '', a.isDefault
-    ? 'Optional. Plain claude already starts this account.'
-    : 'The command you type to start Claude Code as this account.');
-  const [nameInput, aliasInput] = [name, alias].map((el) => el.querySelector('input'));
-  // An alias that follows the claude-NAME pattern keeps following the name.
-  let aliasFollows = a.alias === `claude-${a.name}`;
-  aliasInput.addEventListener('input', () => { aliasFollows = false; });
-  nameInput.addEventListener('input', () => {
-    if (aliasFollows) aliasInput.value = `claude-${nameInput.value}`;
-  });
-  let color = a.color || '';
-  const result = await showDialog({
-    title: `Edit ${a.name}`,
-    body: [name, alias, colorField(a, color, (picked) => { color = picked; }),
-      h('p', { class: 'quiet' }, `The folder ${a.dir} is not moved and nothing inside it changes.`)],
-    confirmLabel: 'Save changes',
-    aside: [
-      a.loggedIn && { label: 'Change login', value: 'login' },
-      { label: 'Remove account', value: 'remove', danger: true },
-    ],
-    onConfirm: async () => {
-      const newName = nameInput.value.trim();
-      const newAlias = aliasInput.value.trim();
-      // The colour first, under the name the account has now.
-      if (color !== (a.color || '')) {
-        await api('/api/accounts/color', { name: a.name, color });
-        a.color = color;
-      }
-      if (newName === a.name && newAlias === (a.alias || '')) return { saved: true };
-      return api('/api/accounts/rename', { name: a.name, newName, alias: newAlias });
-    },
-  });
-  if (result === 'login') return login(a, true);
-  if (result === 'remove') return removeAccount(a);
-  if (!result) return refresh();
-  if (result.alias !== undefined && result.alias !== a.alias) state.aliasNotice = true;
-  toast('Saved changes.');
-  refresh();
-}
-
-async function login(a, relogin) {
-  if (relogin) {
-    const live = state.data.sessions.filter((s) => s.account === a.name && s.live);
-    const ok = await showDialog({
-      title: `Change the login for ${a.name}?`,
-      body: [h('p', {}, `It is logged in as ${a.email}. A terminal window opens, logs that out, and asks you to sign in again.`),
-        h('p', {}, 'History, settings and memory in its folder are kept.'),
-        live.length > 0 && h('p', { class: 'warn' }, `${plural(live.length, 'running session')} of this account will lose the login:`),
-        live.length > 0 && h('ul', { class: 'summary' }, live.map((s) => h('li', {}, `${s.name} in ${s.cwd}`)))],
-      confirmLabel: 'Change login',
-      danger: true,
-    });
-    if (!ok) return;
-  }
-  await act(() => api('/api/accounts/login', { name: a.name, relogin }),
-    (r) => `Opened ${r.terminal}. Finish signing in there; this page updates when it is done.`);
-}
-
-async function removeAccount(a) {
-  const open = state.data.sessions.filter((s) => s.account === a.name && s.open);
-  const ok = await showDialog({
-    title: `Remove ${a.name}?`,
-    body: [h('p', {}, `${a.name} is hidden from this app and its alias is taken away. You can restore it at any time.`),
-      h('p', {}, `Nothing is deleted: the folder ${a.dir}, its login and its history stay on disk.`),
-      open.length > 0 && h('p', { class: 'warn' }, `${plural(open.length, 'open session')} of this account will keep running but will no longer be shown here.`)],
-    confirmLabel: 'Remove account',
-    danger: true,
-    onConfirm: () => api('/api/accounts/remove', { name: a.name }),
-  });
-  if (!ok) return;
-  if (a.alias) state.aliasNotice = true;
-  state.history = null;
-  toast(`Removed ${a.name}. Its folder and data are untouched.`);
-  refresh();
-}
-
-async function restoreAccount(a) {
-  const restored = await act(() => api('/api/accounts/restore', { name: a.name }), `Restored ${a.name}.`);
-  if (restored) {
-    state.aliasNotice = true;
-    state.history = null;
-  }
-}
-
 // ---------------------------------------------------------------------- start
 
-for (const button of document.querySelectorAll('.tab')) {
+for (const button of document.querySelectorAll('.tab[data-tab]')) {
   button.addEventListener('click', () => go({ tab: button.dataset.tab }));
 }
+$('#open-settings').addEventListener('click', () => window.ccSettings.open());
+// Icons named in the page's own HTML.
+for (const slot of document.querySelectorAll('.ic[data-icon]')) slot.replaceWith(icon(slot.dataset.icon));
+// Accounts change in Settings and the list follows. A change of look is CSS's alone.
+window.addEventListener('cc-settings-changed', (event) => {
+  if (event.detail && event.detail.kind !== 'accounts') return;
+  state.signature = '';
+  if (state.history) loadHistory();
+  refresh();
+});
+window.addEventListener('cc-settings-closed', () => {
+  if (document.activeElement === document.body) $('#open-settings').focus();
+});
+window.addEventListener('cc-stopped', () => setOffline('disconnected'));
 $('#disconnect').addEventListener('click', disconnect);
 $('#alerts').addEventListener('click', toggleAlerts);
 // Straight to the list's current row (or the first control in the view), past the header and sidebar.
@@ -1518,24 +1344,13 @@ addEventListener('popstate', () => {
 });
 wide.addEventListener('change', () => mount());
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && state.selected && !state.renaming && !$('#dialog').open) select(null);
-});
-
-// Theme: follow the system unless Light or Dark was picked. theme.js applies the
-// saved choice before first paint; this keeps the picker and the choice in step.
-const themePicker = $('#theme');
-themePicker.value = document.documentElement.dataset.theme || 'system';
-themePicker.addEventListener('change', () => {
-  const theme = themePicker.value;
-  if (theme === 'system') delete document.documentElement.dataset.theme;
-  else document.documentElement.dataset.theme = theme;
-  store('cc-theme', theme);
+  if (event.key === 'Escape' && state.selected && !state.renaming && !document.querySelector('dialog[open]')) select(null);
 });
 
 if (location.hash) {
   readHash();
 } else {
-  state.tab = store('cc-tab') === 'accounts' ? 'accounts' : 'sessions';
+  state.tab = 'sessions';
   state.folder = store('cc-folder') || '';
   history.replaceState(null, '', location.pathname + viewHash());
 }

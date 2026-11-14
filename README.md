@@ -15,7 +15,9 @@ It is an unofficial tool and is not affiliated with Anthropic.
 
 [![The Sessions view: a folder tree, sessions from three accounts in one list, and the details of the picked session beside it](docs/demo.png)](docs/demo.mp4)
 
-A one-minute narrated tour of the page: [docs/demo.mp4](docs/demo.mp4). It uses made-up demo data.
+The screenshot and the one-minute narrated tour ([docs/demo.mp4](docs/demo.mp4)) use made-up
+demo data. The tour was recorded with an earlier version of the page, before the folder
+tree, the Finder layout and Settings.
 
 ## Install
 
@@ -54,33 +56,65 @@ cc-sessions stop     # stop the server (same as Disconnect in the page)
 
 The server runs in the background on `http://127.0.0.1:4777`, so the terminal can be
 closed. Nothing starts at login. It stops by itself after 30 minutes with no page open,
-and **Disconnect** in the page header stops it straight away. Your Claude sessions keep
-running either way.
+and **Disconnect** (in the classic header, or Settings › General) stops it straight away.
+Your Claude sessions keep running either way.
 
 ## The page
 
-- **Sessions** — every session in every account in one list: pinned ones first, then the
-  ones open now, then saved conversations by when they were last active (or A–Z). The
-  sidebar is a tree of the folders they ran in; pick a folder to see only what is under
-  it. **Needs you** lists sessions that are blocked, or finished in the last day and not
-  yet closed, and the browser tab shows how many. Search covers names, folders, artifacts and what you
-  typed in each conversation. Click a session for its details in a panel beside the list:
-  prompts, artifacts and the command that resumes it. **Close** stops a session and keeps
-  its conversation; **Resume** reopens a closed one in a new terminal window. Tick open
-  sessions to close several at once. Artifact links open on claude.ai, for the Claude
-  login that published them. Conversations that were opened and never used are hidden,
-  with a link to show them. From the keyboard, **Skip to sessions** is the first stop, the
-  arrow keys move through the list and the folder tree, and Esc closes the details.
-- **Rename** a session with the pencil on its row, or by double-clicking its name. The name is kept by cc-sessions and
-  shown in the page and on the command line; Claude Code keeps its own title. Clear the
-  name to go back to that title. **Pin** keeps a session or a folder at the top.
+The page has two layouts, picked in **Settings › Appearance › Layout**; it opens in the one
+you used last. Both show the same sessions and accounts; alerts are in the classic layout
+and token usage in the Finder layout.
+
+### Classic layout
+
+- **One list** of every session in every account: pinned ones first, then the ones open
+  now, then saved conversations by when they were last active (or A–Z).
+- **A folder tree** beside it. Pick a folder to see only what is under it; pin one to keep
+  it at the top. **Needs you** lists sessions that are blocked, or finished in the last day
+  and not yet closed, and the browser tab shows how many.
+- **Search** covers names, folders, artifacts and what you typed in each conversation.
+  Account and status chips narrow the list.
+- **Details** open in a panel beside the list when you click a session: its prompts,
+  artifacts (links to claude.ai, which open for the Claude login that published them) and
+  the command that resumes it.
+- **Actions**, on each row as you point at it: rename, copy the resume command, pin, and
+  **Close** (stops the session, keeps its conversation) or **Resume** (reopens it in a new
+  terminal window). Tick open sessions to close several at once.
+- Conversations that were opened and never used are hidden, with a link to show them.
 - **Alerts**, in the header, show a desktop notification when a session starts waiting for
   you or finishes. They need the page open in a browser tab.
-- **Accounts** — login, plan, shortcut and folder of each account. Add, rename, change
-  login, remove and restore. The pencil on a card opens one dialog for its name, alias,
-  colour (which marks the account everywhere), login and removal.
 
-The picker in the header switches between **Light**, **Dark** and **Match system**.
+### Finder layout
+
+A Finder-style browser of the same sessions: folders you open like folders, sessions as
+files in them, accounts as tags in the sidebar.
+
+- **Icons, List and Columns** views, back and forward, a path bar, and Recents, Needs you
+  and Open now in the sidebar.
+- **Quick Look** (Space or double-click) shows a session's details and actions; a
+  right-click menu has the rest.
+- Keys as in Finder: arrows to move, Enter to rename, ⌘↑ for the folder above, ⌘[ and ⌘]
+  for back and forward, ⌘1–3 for the views, ⌘O to resume, ⌘⌫ to close (after asking),
+  ⌘, for Settings.
+- **Usage** shows the tokens your sessions used: today, the last 7 and 30 days, a calendar
+  heat map of every day, when in the week you use Claude, and totals by account, model
+  and session. Pick all tokens, without cache reads, or output only.
+
+### Both layouts
+
+- **Rename** a session with the pencil on its row, by double-clicking its name, or with
+  Enter in the Finder layout. The name is kept by cc-sessions and shown in the page and on
+  the command line; Claude Code keeps its own title. Clear the name to go back to that title.
+- **Settings**, from the classic header or the Finder sidebar:
+  - **Appearance**: the layout; Light, Dark or Match system; a template (Mac, Classic,
+    Graphite or Paper, or each layout's own look); and a primary colour for buttons, links
+    and what is selected. These are kept in the browser.
+  - **Accounts**: login, plan, shortcut and folder of each account. Add, rename, change
+    login, remove and restore. **Edit…** opens one dialog for an account's name, alias,
+    colour (which marks it everywhere), login and removal.
+  - **General**: disconnecting, which stops the server.
+- **From the keyboard** in the classic layout, **Skip to sessions** is the first stop, the
+  arrow keys move through the list and the folder tree, and Esc closes the details.
 
 Statuses: `Working` (Claude is busy), `Blocked` (waiting for your input), `Idle` (open in
 a terminal, doing nothing), `Done` (background task finished, not closed), `Closed`
@@ -103,7 +137,7 @@ when you change the command name, and on Windows the `claude-<name>.cmd` launche
 account you renamed or removed. None of them hold data.
 
 Claude Code itself deletes conversations after `cleanupPeriodDays` (30 by default) without
-activity. The Accounts tab shows that number per account. To keep history longer, set
+activity. Settings › Accounts shows that number per account. To keep history longer, set
 `cleanupPeriodDays` in that account's `settings.json`.
 
 ## Command line
@@ -157,12 +191,15 @@ In the settings folder above:
 | `closed.json` | Sessions closed through the tool. |
 | `titles.json` | Names you gave to sessions. |
 | `pins.json` | Sessions and folders you pinned. |
-| `history-cache.json` | Rebuildable index of saved conversations. |
+| `history-cache.json` | Rebuildable index of saved conversations, with their token counts. |
 | `ui-token` | Access key for the web app (readable only by you). |
 | `ui.pid`, `ui.log` | The running server's pid and its log. |
 
 `idleMinutes` in `config.json` sets how long the server waits with no page open before it
 stops; `0` keeps it running until you stop it.
+
+The layout, theme, template and primary colour are kept in the browser, not here, so
+another browser starts with the defaults.
 
 ## How the server is protected
 
@@ -182,6 +219,10 @@ from `ui-token` on every API call, rejects requests whose `Host` is not
 - History is read from `<account>/projects/<folder>/<session>.jsonl`, top level only,
   read-only. Artifacts are the links Claude Code records there when a conversation
   publishes or opens one.
+- Token counts come from the usage Claude Code records on each reply in those files. A
+  reply written over several lines is counted once. Sub-agents keep conversations of their
+  own, which are not counted, and days older than an account's `cleanupPeriodDays` are
+  empty because Claude Code has deleted them.
 
 ## Building from source
 
@@ -197,4 +238,5 @@ port.
 
 ## Licence
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The icons are from [Lucide](https://lucide.dev) (ISC licence;
+the notice is in `ui/icons.js`).
