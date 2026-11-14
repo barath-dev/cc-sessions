@@ -147,7 +147,7 @@ button, input, select { font: inherit; color: inherit; }
 
 /* ---------------------------------------------------------------- toolbar */
 
-.main { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; min-width: 0; }
+.main { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto auto; min-width: 0; min-height: 0; }
 .tb { display: flex; align-items: center; gap: 0.75rem; min-height: 3.25rem; padding: 0.45rem 0.9rem; background: var(--bar); border-bottom: 1px solid var(--line); }
 .tb-title { flex: 1; min-width: 0; overflow: hidden; font-size: 15px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .seg { display: inline-flex; padding: 2px; border: 1px solid var(--line); border-radius: 8px; background: var(--window); }
@@ -344,6 +344,92 @@ button, input, select { font: inherit; color: inherit; }
 .heat.lx { background: none; }
 .heat.lx:hover { outline: 0; }
 .legend { display: flex; align-items: center; justify-content: flex-end; gap: 3px; margin-top: 0.6rem; color: var(--faint); font-size: 11px; }
+
+/* The heat maps' colour. Each is one hue, light to dark in light mode and dark to light in
+   dark mode, so more always reads as more; blue is the default set in :root. */
+.usage[data-heat="green"] { --heat-1: #c6e9cf; --heat-2: #7fcf95; --heat-3: #3fa962; --heat-4: #1f6f3d; }
+.usage[data-heat="amber"] { --heat-1: #f9d88a; --heat-2: #f8c25c; --heat-3: #e08d1a; --heat-4: #9a5a07; }
+.usage[data-heat="purple"] { --heat-1: #e4dafc; --heat-2: #b9a2f6; --heat-3: #8b63e8; --heat-4: #5b34b8; }
+.usage[data-heat="teal"] { --heat-1: #c4ece7; --heat-2: #73cfc3; --heat-3: #1fa594; --heat-4: #0d6b61; }
+/* The primary colour, mixed into the page's surface: faint to full. */
+.usage[data-heat="primary"] {
+  --heat-1: color-mix(in srgb, var(--accent) 22%, var(--window));
+  --heat-2: color-mix(in srgb, var(--accent) 45%, var(--window));
+  --heat-3: color-mix(in srgb, var(--accent) 72%, var(--window));
+  --heat-4: var(--accent);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .usage[data-heat="green"] { --heat-1: #0f3d22; --heat-2: #1d6b3b; --heat-3: #2fa356; --heat-4: #7fdc98; }
+  :root:not([data-theme="light"]) .usage[data-heat="amber"] { --heat-1: #4a2e05; --heat-2: #8a560a; --heat-3: #d4891a; --heat-4: #f6c46a; }
+  :root:not([data-theme="light"]) .usage[data-heat="purple"] { --heat-1: #2c1a5c; --heat-2: #4f32a3; --heat-3: #8463e6; --heat-4: #c3b0fa; }
+  :root:not([data-theme="light"]) .usage[data-heat="teal"] { --heat-1: #0b3a36; --heat-2: #126b62; --heat-3: #22a594; --heat-4: #7fded0; }
+}
+:root[data-theme="dark"] .usage[data-heat="green"] { --heat-1: #0f3d22; --heat-2: #1d6b3b; --heat-3: #2fa356; --heat-4: #7fdc98; }
+:root[data-theme="dark"] .usage[data-heat="amber"] { --heat-1: #4a2e05; --heat-2: #8a560a; --heat-3: #d4891a; --heat-4: #f6c46a; }
+:root[data-theme="dark"] .usage[data-heat="purple"] { --heat-1: #2c1a5c; --heat-2: #4f32a3; --heat-3: #8463e6; --heat-4: #c3b0fa; }
+:root[data-theme="dark"] .usage[data-heat="teal"] { --heat-1: #0b3a36; --heat-2: #126b62; --heat-3: #22a594; --heat-4: #7fded0; }
+
+.card-tools { display: flex; align-items: center; gap: 0.75rem; }
+.btn-toggle[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+/* The 3D view: a toolbar, the canvas, a caption, and the picked day's details. */
+.sky { display: flex; flex-direction: column; gap: 0.6rem; width: 100%; }
+.sky-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.sky-views button { padding: 0 0.65rem; }
+.sky-tools { display: flex; gap: 0.3rem; }
+.sky-stage { position: relative; min-height: 0; overflow: hidden; }
+.sky-caption { margin: 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.legend-note { margin-right: auto; color: var(--muted); }
+.sky:fullscreen { box-sizing: border-box; height: 100%; padding: 1rem 1.25rem; overflow: hidden; background: var(--window); color: var(--ink); }
+.sky:fullscreen .sky-stage { flex: 1; }
+.sky:fullscreen .sky-card { flex: none; max-height: 36vh; overflow-y: auto; }
+.sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+.sky-card { padding: 0.8rem 0.9rem; border: 1px solid var(--line); border-radius: 8px; }
+.sky-card[hidden] { display: none; }
+.sky-card h4 { margin: 0 0 0.4rem; color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+.sky-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.sky-card-head h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.sky-card-total { margin-top: 0.1rem; font-size: 20px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.sky-card-total span { color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: 0; }
+.sky-facts { display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; margin: 0.5rem 0 0.7rem; padding: 0; list-style: none; color: var(--muted); font-size: 12px; }
+.sky-parts { margin-bottom: 0.8rem; }
+.sky-parts-bar { display: flex; gap: 2px; height: 10px; overflow: hidden; border-radius: 4px; background: var(--heat-0); }
+.sky-parts-key { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; margin-top: 0.4rem; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.sky-parts-key span { display: inline-flex; align-items: center; gap: 0.35rem; }
+.sky-part { display: block; flex-basis: 0; min-width: 3px; }
+.sky-parts-key .sky-part { flex: none; width: 9px; height: 9px; border-radius: 2px; }
+.sky-part.p0 { background: var(--heat-4); }
+.sky-part.p1 { background: var(--heat-3); }
+.sky-part.p2 { background: var(--heat-2); }
+.sky-part.p3 { background: var(--heat-1); }
+.sky-card-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0.8rem 1.5rem; margin-bottom: 0.8rem; }
+.sky-hours { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); grid-template-rows: 48px auto; align-items: end; gap: 0 2px; }
+.sky-hour { grid-row: 1; height: max(2px, var(--h)); border-radius: 2px 2px 0 0; background: var(--heat-3); }
+.sky-hour:hover { background: var(--heat-4); }
+.sky-hour-label { grid-row: 2; margin-top: 0.2rem; color: var(--faint); font-size: 10px; }
+.sky-accounts { display: flex; flex-direction: column; gap: 0.3rem; }
+.sky-accounts > div { display: flex; align-items: center; gap: 0.4rem; }
+.sky-acct-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-button:disabled { opacity: 0.55; }
+.bar-button:disabled:hover { background: none; }
+/* Back from 3D: the flat calendar settles in. */
+.cal-enter { animation: cal-enter 520ms cubic-bezier(0.2, 0.7, 0.2, 1); }
+@keyframes cal-enter { from { opacity: 0; transform: perspective(900px) rotateX(18deg) scale(0.97); } }
+@media (prefers-reduced-motion: reduce) { .cal-enter { animation: none; } }
+.sky-canvas { display: block; cursor: grab; touch-action: none; border-radius: 8px; }
+.sky-canvas:active { cursor: grabbing; }
+.sky-canvas:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sky-btn { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--window); color: var(--muted); cursor: default; }
+.sky-btn:hover { color: var(--ink); border-color: var(--faint); }
+.sky-btn .cc-icon { width: 0.95rem; height: 0.95rem; }
+.sky-hint { position: absolute; left: 0.5rem; bottom: 0.3rem; margin: 0; color: var(--muted); font-size: 11px; pointer-events: none; }
+.heat-picker { display: flex; align-items: center; gap: 0.3rem; }
+.heat-swatch { position: relative; display: inline-block; width: 1.05rem; height: 1.05rem; border-radius: 50%; background: var(--swatch); cursor: pointer; }
+.heat-swatch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.heat-swatch:has(input:checked) { box-shadow: 0 0 0 2px var(--window), 0 0 0 3.5px var(--ink); }
+.heat-swatch:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 3px; }
+/* Primary colour shows as a ring, as it is whatever Settings says. */
+.heat-swatch[title="Primary colour"] { background: conic-gradient(var(--accent) 0 50%, color-mix(in srgb, var(--accent) 35%, var(--window)) 0 100%); }
 .legend .heat { width: 12px; height: 12px; min-width: 0; }
 .legend .heat:first-of-type { margin-left: 0.35rem; }
 .legend .heat:last-of-type { margin-right: 0.35rem; }
@@ -368,8 +454,11 @@ button, input, select { font: inherit; color: inherit; }
 .toast-error { background: var(--danger); color: var(--on-danger); }
 
 @media (max-width: 760px) {
-  .win { grid-template-columns: 1fr; }
+  .win { grid-template-columns: minmax(0, 1fr); }
   .sb { display: none; }
+  .tb { flex-wrap: wrap; gap: 0.5rem; }
+  .tb-title { flex-basis: calc(100% - 6rem); order: -1; }
+  .search { flex: 1; min-width: 0; }
+  .search input { width: 100%; }
   .tb .tb-settings { display: inline-flex; }
-  .search input { width: 6rem; }
 }

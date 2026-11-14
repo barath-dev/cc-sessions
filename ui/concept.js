@@ -7,6 +7,10 @@
 const COLORS = ['#0f9488', '#7c56d8', '#d0661c', '#c2417c', '#2f6fd0', '#4a8f2f', '#b08412', '#64768a'];
 const STATUS = { working: 'Working', blocked: 'Blocked', idle: 'Idle', done: 'Done', closed: 'Closed' };
 const DAY = 24 * 60 * 60 * 1000;
+// Colours for the heat maps: each one hue, light to dark (concept.css has the steps).
+// 'primary' follows the primary colour picked in Settings.
+const HEATS = [['blue', 'Blue', '#3987e5'], ['green', 'Green', '#3fa962'], ['amber', 'Amber', '#e08d1a'],
+  ['purple', 'Purple', '#8b63e8'], ['teal', 'Teal', '#1fa594'], ['primary', 'Primary colour', 'var(--accent)']];
 const $ = (selector) => document.querySelector(selector);
 
 // ------------------------------------------------------------------ utilities
@@ -126,6 +130,8 @@ const S = {
   usageAccount: '',    // '' for every account
   metric: ['all', 'fresh', 'output'].includes(store('cc-concept-metric')) ? store('cc-concept-metric') : 'all',
   usageTable: false,
+  heat: HEATS.some(([id]) => id === store('cc-concept-heat')) ? store('cc-concept-heat') : 'blue',
+  heat3d: store('cc-concept-heat3d') === '1',   // the calendar as blocks seen at an angle
   stopped: false,      // set once the server is stopped from Settings
 };
 
@@ -342,6 +348,7 @@ function render() {
   renderSidebar();
   renderToolbar();
   renderContent();
+  if (SKY.wrap && !SKY.wrap.isConnected) skyDrop();
   renderPath();
   renderStatus();
   if (S.quickLook) renderQuickLook();
@@ -453,9 +460,15 @@ function select(key) {
 function renderContent() {
   const content = $('#content');
   if (S.place.kind === 'usage') {
+    // Moving the 3D view's canvas would cut off a drag or end full screen: draw after.
+    if (SKY.scene && (SKY.scene.isDragging() || skyFull())) { SKY.pending = true; return; }
+    const focused = SKY.canvas && document.activeElement === SKY.canvas;
+    const scroll = content.scrollTop;
     content.classList.remove('is-columns');
     content.removeAttribute('aria-activedescendant');
     content.replaceChildren(usageView());
+    content.scrollTop = scroll;
+    if (focused && SKY.canvas && SKY.canvas.isConnected) SKY.canvas.focus({ preventScroll: true });
     return;
   }
   const items = itemsIn();
@@ -727,9 +740,11 @@ function usageView() {
       const value = metricOf(row);
       total += value;
       const key = dayKey(date);
-      const day = days.get(key) || { value: 0, parts: [0, 0, 0, 0] };
+      const day = days.get(key) || { value: 0, parts: [0, 0, 0, 0], accounts: {}, hours: new Array(24).fill(0) };
       day.value += value;
       for (let i = 0; i < 4; i++) day.parts[i] += row[i + 1];
+      day.accounts[name] = (day.accounts[name] || 0) + value;
+      day.hours[date.getHours()] += value;
       days.set(key, day);
       week[(date.getDay() + 6) % 7][date.getHours()] += value;
     }
@@ -767,7 +782,7 @@ function usageView() {
     tile('Last 30 days', sumDays(30)),
     busiest ? tile('Busiest day', busiest[1].value, dayLabel(new Date(`${busiest[0]}T00:00`))) : tile('Busiest day', 0));
 
-  return h('div', { class: 'usage' },
+  return h('div', { class: 'usage', 'data-heat': S.heat },
     controls,
     tiles,
     calendar(days, today),
@@ -789,7 +804,9 @@ function calendar(days, today) {
     date.setDate(start.getDate() + i);
     cells.push(date);
   }
-  const level = levels(cells.map((d) => (days.get(dayKey(d)) || { value: 0 }).value));
+  const values = cells.map((d) => (days.get(dayKey(d)) || { value: 0 }).value);
+  const level = levels(values);
+  const ruler = niceTicks(Math.max(...values));
   const months = [];
   for (let w = 0; w < WEEKS; w++) {
     const first = cells[w * 7];
@@ -804,21 +821,363 @@ function calendar(days, today) {
       const future = date > today;
       const value = day ? day.value : 0;
       return h('span', { class: `heat l${future ? 'x' : level(value)}`, style: { 'grid-column': String(Math.floor(i / 7) + 2), 'grid-row': String((i % 7) + 2) },
-        onpointermove: future ? null : (event) => tip(event, dayLabel(date), [value ? `${tokens(value)} tokens` : 'No tokens',
-          ...(day ? [`${tokens(day.parts[0])} in · ${tokens(day.parts[1])} out · ${tokens(day.parts[2])} cache written · ${tokens(day.parts[3])} cache read`] : [])]),
+        onpointermove: future ? null : (event) => tip(event, dayLabel(date), dayLines(day)),
         onpointerleave: untip });
     }));
   const used = [...days.entries()].filter(([, d]) => d.value > 0).sort((a, b) => (a[0] < b[0] ? 1 : -1));
   return h('section', { class: 'card' },
     h('header', { class: 'card-head' },
       h('h2', {}, `Tokens per day · ${metricLabel()}`),
-      h('button', { type: 'button', class: 'btn btn-small', onclick: () => { S.usageTable = !S.usageTable; render(); } }, window.ccIcon(S.usageTable ? 'layout-grid' : 'list'), S.usageTable ? 'Show as calendar' : 'Show as table')),
+      h('div', { class: 'card-tools' },
+        !S.usageTable && heatPicker(),
+        !S.usageTable && h('button', { type: 'button', class: 'btn btn-small btn-toggle', 'aria-pressed': String(S.heat3d),
+          title: 'Show the days as blocks, as tall as their tokens', onclick: () => {
+            S.heat3d = !S.heat3d;
+            store('cc-concept-heat3d', S.heat3d ? '1' : '');
+            S.entrance = S.heat3d ? 'sky' : 'flat';
+            render();
+          } }, window.ccIcon('box'), '3D'),
+        h('button', { type: 'button', class: 'btn btn-small', onclick: () => { S.usageTable = !S.usageTable; render(); } }, window.ccIcon(S.usageTable ? 'layout-grid' : 'list'), S.usageTable ? 'Show as calendar' : 'Show as table'))),
     S.usageTable
       ? h('table', { class: 'list usage-table' },
         h('thead', {}, h('tr', {}, ['Day', metricLabel(), 'In', 'Out', 'Cache written', 'Cache read'].map((t, i) => h('th', { class: i ? 'num' : '' }, t)))),
         h('tbody', {}, used.map(([key, d]) => h('tr', { class: 'row' }, h('td', {}, dayLabel(new Date(`${key}T00:00`))),
           [d.value, ...d.parts].map((v) => h('td', { class: 'num' }, tokens(v)))))))
-      : [grid, h('div', { class: 'legend' }, 'Less', [0, 1, 2, 3, 4].map((l) => h('span', { class: `heat l${l}`, 'aria-hidden': 'true' })), 'More')]);
+      : [S.heat3d ? skyline(cells, days, today, level, take('sky')) : entering(grid, take('flat')),
+        h('div', { class: 'legend' },
+          S.heat3d && h('span', { class: 'legend-note' }, `Height: tokens${ruler.step ? `, a line every ${tokens(ruler.step)}` : ''} · Colour: which quarter of the days used`),
+          'Less', [0, 1, 2, 3, 4].map((l) => h('span', { class: `heat l${l}`, 'aria-hidden': 'true' })), 'More')]);
+}
+
+// Whether the entrance just asked for is `which`; asking is good for one drawing.
+function take(which) {
+  if (S.entrance !== which || matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
+  S.entrance = null;
+  return true;
+}
+
+function entering(el, on) {
+  if (on) el.classList.add('cal-enter');
+  return el;
+}
+
+function dayLines(day) {
+  if (!day || !day.value) return ['No tokens'];
+  return [`${tokens(day.value)} tokens`,
+    `${tokens(day.parts[0])} in · ${tokens(day.parts[1])} out · ${tokens(day.parts[2])} cache written · ${tokens(day.parts[3])} cache read`];
+}
+
+// The year as a 3D object, drawn by sky.js: a slab with a block for each day, as tall as
+// its tokens. One scene lives across re-renders, so a refresh never cuts off a drag, a
+// turn or full screen; it is handed new numbers only when they change.
+const SKY_VIEWS = [['angled', 'Angled', '1'], ['front', 'Front', '2'], ['top', 'Top', '3'], ['side', 'Side', '4'], ['recent', 'Last 30 days', '5']];
+const SKY = {
+  wrap: null, stage: null, canvas: null, scene: null, live: null, caption: null, card: null, spinButton: null, fullButton: null,
+  view: 'angled', spin: !matchMedia('(prefers-reduced-motion: reduce)').matches,
+  dataKey: '', paletteKey: '', pending: false,
+  cells: [], days: new Map(), today: null, values: [],
+  selected: null,       // the picked day's dayKey, so it survives new numbers
+  sessions: null,       // { key, rows, error } for the picked day
+};
+
+// Round steps for the height lines: 1, 2 or 5 times a power of ten, about three of them.
+function niceTicks(most) {
+  if (most <= 0) return { step: 0, values: [] };
+  const rough = most / 3;
+  const power = 10 ** Math.floor(Math.log10(rough));
+  const step = [1, 2, 5, 10].find((m) => m * power >= rough) * power;
+  const values = [];
+  for (let v = step; v <= most * 1.001; v += step) values.push(v);
+  return { step, values };
+}
+
+const ordinal = (n) => `${n}${n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] || 'th'}`;
+const shortDay = (date) => date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+const weekTotal = (i) => SKY.values.slice(Math.floor(i / 7) * 7, Math.floor(i / 7) * 7 + 7).reduce((sum, v) => sum + v, 0);
+
+// "Tue 12 Nov 2026: 1.2M tokens, busiest that week" — for the live region and the canvas.
+function describeDay(i) {
+  const date = SKY.cells[i];
+  if (!date) return '';
+  const value = SKY.values[i];
+  if (!value) return `${dayLabel(date)}: no tokens`;
+  const week = SKY.values.slice(Math.floor(i / 7) * 7, Math.floor(i / 7) * 7 + 7);
+  const note = value >= Math.max(...week) ? ', busiest that week' : '';
+  return `${dayLabel(date)}: ${tokens(value)} tokens${note}`;
+}
+
+let announcing = 0;
+function announce(text) {
+  clearTimeout(announcing);
+  announcing = setTimeout(() => { if (SKY.live) SKY.live.textContent = text; }, 150);
+}
+
+const skyFull = () => !!SKY.wrap && document.fullscreenElement === SKY.wrap;
+
+// The page's colours, read where the heat steps are set; handed over only when they change.
+function skyPalette() {
+  if (!SKY.scene || !SKY.wrap.isConnected) return;
+  const probe = h('span', { hidden: true });
+  SKY.wrap.append(probe);
+  const read = (value) => {
+    probe.style.setProperty('color', value);
+    return getComputedStyle(probe).color;
+  };
+  const raw = { steps: [0, 1, 2, 3, 4].map((l) => read(`var(--heat-${l})`)), ink: read('var(--ink)'), muted: read('var(--muted)'),
+    halo: read('var(--window)'), base: read('var(--line)'), font: getComputedStyle(document.body).fontFamily };
+  probe.remove();
+  const key = JSON.stringify(raw);
+  if (key === SKY.paletteKey) return;
+  SKY.paletteKey = key;
+  const [r, g, b] = rgbOf(raw.halo);
+  SKY.scene.setPalette({ ...raw, steps: raw.steps.map(rgbOf), base: rgbOf(raw.base), dark: 0.2126 * r + 0.7152 * g + 0.0722 * b < 110 });
+}
+
+function skyMake() {
+  const button = (icon, label, onclick) => h('button', { type: 'button', class: 'sky-btn', 'aria-label': label, title: label, onclick }, window.ccIcon(icon));
+  SKY.canvas = h('canvas', { class: 'sky-canvas', tabIndex: 0, role: 'application', 'aria-roledescription': '3D chart', 'aria-describedby': 'sky-hint sky-keys' });
+  SKY.live = h('div', { class: 'sr-only', 'aria-live': 'polite' });
+  SKY.spinButton = button('pause', 'Stop turning', () => SKY.scene.setSpin(!SKY.spin));
+  SKY.fullButton = button('maximize', 'Full screen', () => (skyFull() ? document.exitFullscreen() : SKY.wrap.requestFullscreen().catch(() => {})));
+  SKY.caption = h('p', { class: 'sky-caption' });
+  SKY.card = h('div', { class: 'sky-card', hidden: true });
+  SKY.stage = h('div', { class: 'sky-stage' }, SKY.canvas,
+    h('p', { class: 'sky-hint', id: 'sky-hint' }, 'Drag to turn · Shift-drag to move · ⌘-scroll to zoom · Click a day'),
+    h('p', { class: 'sr-only', id: 'sky-keys' }, 'Arrow keys move from day to day, Shift with the arrow keys turns the view, 1 to 5 pick a view, Enter shows the day\'s details, plus and minus zoom, Space starts or stops turning.'));
+  SKY.wrap = h('div', { class: 'sky' },
+    h('div', { class: 'sky-bar' },
+      h('div', { class: 'seg sky-views', role: 'group', 'aria-label': 'View' }, SKY_VIEWS.map(([id, label, key]) =>
+        h('button', { type: 'button', 'data-view': id, 'aria-pressed': String(SKY.view === id), title: `${label} (${key})`, onclick: () => SKY.scene.view(id) }, label))),
+      h('div', { class: 'sky-tools' },
+        button('rotate-ccw', 'Turn left', () => SKY.scene.turn(-45)),
+        button('rotate-cw', 'Turn right', () => SKY.scene.turn(45)),
+        SKY.spinButton,
+        SKY.fullButton)),
+    SKY.stage, SKY.caption, SKY.card, SKY.live);
+
+  SKY.scene = window.ccSky.create(SKY.canvas, {
+    isFullscreen: skyFull,
+    onHover: (i, event) => {
+      if (i === null || !event) { untip(); return; }
+      const date = SKY.cells[i];
+      const monday = SKY.cells[Math.floor(i / 7) * 7];
+      tip(event, dayLabel(date), [...dayLines(SKY.days.get(dayKey(date))), `Week of ${shortDay(monday)}: ${tokens(weekTotal(i))}`]);
+    },
+    onCursor: (i) => announce(describeDay(i)),
+    onSelect: (i) => {
+      SKY.selected = i === null ? null : dayKey(SKY.cells[i]);
+      skyCard();
+      announce(i === null ? 'Details closed' : `${describeDay(i)}. Details below.`);
+    },
+    onCamera: (view) => {
+      if (view) SKY.view = view;
+      for (const b of SKY.wrap.querySelectorAll('.sky-views button')) b.setAttribute('aria-pressed', String(b.dataset.view === view));
+    },
+    onSpin: (on) => {
+      SKY.spin = on;
+      SKY.spinButton.replaceChildren(window.ccIcon(on ? 'pause' : 'play'));
+      SKY.spinButton.setAttribute('aria-label', on ? 'Stop turning' : 'Turn slowly');
+      SKY.spinButton.title = on ? 'Stop turning' : 'Turn slowly';
+    },
+    onDragEnd: () => { if (SKY.pending) { SKY.pending = false; render(); } },
+  });
+}
+
+function skyDrop() {
+  if (!SKY.scene) return;
+  SKY.scene.destroy();
+  Object.assign(SKY, { wrap: null, stage: null, canvas: null, scene: null, live: null, caption: null, card: null, dataKey: '', paletteKey: '', pending: false });
+}
+
+function skyline(cells, days, today, level, entrance = false) {
+  const fresh = !SKY.scene;
+  if (fresh) skyMake();
+  const values = cells.map((d) => (days.get(dayKey(d)) || { value: 0 }).value);
+  Object.assign(SKY, { cells, days, today, values });
+  const most = Math.max(1, ...values);
+  const busiest = values.indexOf(Math.max(...values));
+  const todayAt = cells.findIndex((d) => dayKey(d) === dayKey(today));
+  const year = { year: 'numeric' };
+  const data = {
+    cols: cells.length / 7,
+    most,
+    cells: values.map((value, i) => ({ value, level: level(value), future: cells[i] > today })),
+    colLabels: [],
+    rowLabels: cells.slice(0, 7).map((d, row) => ({ row, text: d.toLocaleDateString(undefined, { weekday: 'short' }) })),
+    callouts: [
+      values[busiest] > 0 && { index: busiest, text: `${tokens(values[busiest])} · ${shortDay(cells[busiest])}`, strong: true },
+      todayAt >= 0 && todayAt !== busiest && { index: todayAt, text: 'Today' },
+    ].filter(Boolean),
+    ticks: niceTicks(most).values.map((value) => ({ value, text: tokens(value) })),
+  };
+  for (let w = 0; w < data.cols; w++) {
+    const first = cells[w * 7];
+    if (w && first.getDate() > 7) continue;
+    const strong = w === 0 || first.getMonth() === 0;
+    const month = first.toLocaleDateString(undefined, { month: 'short' });
+    data.colLabels.push({ col: w, text: strong ? `${month} ${first.toLocaleDateString(undefined, year)}` : month, strong });
+  }
+  const key = JSON.stringify(data);
+  if (key !== SKY.dataKey) {
+    SKY.dataKey = key;
+    SKY.scene.setData(data);
+  }
+  const at = SKY.selected ? cells.findIndex((d) => dayKey(d) === SKY.selected) : -1;
+  if (SKY.selected && at < 0) SKY.selected = null;
+  SKY.scene.setSelected(at >= 0 ? at : null);
+
+  const total = values.reduce((sum, v) => sum + v, 0);
+  const summary = `Last ${data.cols} weeks · ${tokens(total)} tokens${values[busiest] ? ` · busiest ${tokens(values[busiest])} on ${shortDay(cells[busiest])}` : ''}`;
+  SKY.caption.textContent = summary;
+  SKY.canvas.setAttribute('aria-label', `Tokens per day as a 3D chart, a block per day, as tall as its tokens. ${summary}. The table view lists every day.`);
+  skyCard();
+
+  if (fresh) {
+    SKY.scene.setSpin(SKY.spin);
+    if (entrance) SKY.scene.enter(SKY.view);
+    else SKY.scene.jump(SKY.view);
+  }
+  // The colours are read once the view is in the page, where its heat steps apply.
+  queueMicrotask(skyPalette);
+  return SKY.wrap;
+}
+
+// The picked day: what it used, how it compares, by account and hour, and its sessions.
+function skyCard() {
+  const card = SKY.card;
+  if (!card) return;
+  const at = SKY.selected ? SKY.cells.findIndex((d) => dayKey(d) === SKY.selected) : -1;
+  if (at < 0) { card.hidden = true; card.replaceChildren(); return; }
+  const date = SKY.cells[at];
+  const day = SKY.days.get(SKY.selected);
+  const value = SKY.values[at];
+  const close = h('button', { type: 'button', class: 'sky-btn', 'aria-label': 'Close the details', title: 'Close (Esc)',
+    onclick: () => { SKY.scene.setSelected(null); SKY.selected = null; skyCard(); SKY.canvas.focus({ preventScroll: true }); } }, window.ccIcon('x'));
+  const head = h('header', { class: 'sky-card-head' },
+    h('div', {}, h('h3', {}, dayLabel(date)), h('div', { class: 'sky-card-total' }, value ? `${tokens(value)} tokens` : 'No tokens', h('span', {}, ` · ${metricLabel()}`))),
+    close);
+  card.hidden = false;
+  if (!value || !day) { card.replaceChildren(head); return; }
+
+  // How it compares: its week, the year, the last 30 days.
+  const active = SKY.values.filter((v) => v > 0).sort((a, b) => b - a);
+  const rank = active.indexOf(value) + 1;
+  const todayAt = SKY.cells.findIndex((d) => dayKey(d) === dayKey(SKY.today));
+  const month = SKY.values.slice(Math.max(0, todayAt - 29), todayAt + 1);
+  const average = month.reduce((sum, v) => sum + v, 0) / 30;
+  const week = weekTotal(at);
+  const facts = [
+    `${Math.round((value / week) * 100)}% of its week`,
+    rank === 1 ? 'The busiest day of the year' : `${ordinal(rank)} busiest of ${active.length} days used`,
+    average > 0 && `${(value / average).toFixed(value / average >= 10 ? 0 : 1)}× the daily average of the last 30 days`,
+  ].filter(Boolean);
+
+  // The four kinds of tokens, one bar, named below it.
+  const kinds = ['In', 'Out', 'Cache written', 'Cache read'];
+  const sum = day.parts.reduce((s, v) => s + v, 0) || 1;
+  const parts = h('div', { class: 'sky-parts' },
+    h('div', { class: 'sky-parts-bar', role: 'img', 'aria-label': kinds.map((k, i) => `${k} ${tokens(day.parts[i])}`).join(', ') },
+      day.parts.map((v, i) => v > 0 && h('span', { class: `sky-part p${i}`, style: { 'flex-grow': String(v / sum) } }))),
+    h('div', { class: 'sky-parts-key' }, kinds.map((k, i) => h('span', {}, h('i', { class: `sky-part p${i}` }), `${k} ${tokens(day.parts[i])}`))));
+
+  // Hour by hour, on this browser's clock.
+  const peak = Math.max(1, ...day.hours);
+  const hours = h('div', { class: 'sky-hours', role: 'img', 'aria-label': `Tokens by hour. Busiest hour ${String(day.hours.indexOf(peak)).padStart(2, '0')}:00.` },
+    day.hours.map((v, hour) => h('span', { class: 'sky-hour', style: { '--h': `${Math.round((v / peak) * 100)}%` },
+      onpointermove: (event) => tip(event, `${String(hour).padStart(2, '0')}:00–${String(hour + 1).padStart(2, '0')}:00`, [v ? `${tokens(v)} tokens` : 'No tokens']),
+      onpointerleave: untip })),
+    ['00', '06', '12', '18'].map((t, n) => h('span', { class: 'sky-hour-label', style: { 'grid-column': String(n * 6 + 1) } }, t)));
+
+  const accounts = Object.entries(day.accounts).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+  card.replaceChildren(head,
+    h('ul', { class: 'sky-facts' }, facts.map((f) => h('li', {}, f))),
+    parts,
+    h('div', { class: 'sky-card-cols' },
+      h('section', {}, h('h4', {}, 'By hour'), hours),
+      accounts.length > 1 && h('section', {}, h('h4', {}, 'By account'), h('div', { class: 'sky-accounts' }, accounts.map(([name, v]) =>
+        h('div', {}, h('span', { class: 'tagdot', style: { '--acct': accountColor(name) } }), h('span', { class: 'sky-acct-name' }, name), h('span', { class: 'bar-value' }, tokens(v))))))),
+    h('section', { class: 'sky-sessions' }, h('h4', {}, 'Sessions that day'), skySessions(date)));
+}
+
+function skySessions(date) {
+  // The server counts in hours since 1970 (UTC); this day is the hours that start on it here.
+  const next = new Date(date);
+  next.setDate(next.getDate() + 1);
+  const from = Math.ceil(date.getTime() / 3600000);
+  const to = Math.ceil(next.getTime() / 3600000);
+  const key = `${from}-${to}`;
+  const got = SKY.sessions && SKY.sessions.key === key ? SKY.sessions : null;
+  if (!got) {
+    SKY.sessions = { key, rows: null, error: null };
+    api(`/api/usage/sessions?from=${from}&to=${to}`)
+      .then((data) => { if (SKY.sessions && SKY.sessions.key === key) SKY.sessions.rows = data.sessions; })
+      .catch((err) => { if (SKY.sessions && SKY.sessions.key === key) SKY.sessions.error = err.message; })
+      .finally(() => { if (SKY.sessions && SKY.sessions.key === key) skyCard(); });
+    return h('p', { class: 'muted' }, 'Looking…');
+  }
+  if (got.error) return h('p', { class: 'muted' }, `Could not list them: ${got.error}`);
+  if (!got.rows) return h('p', { class: 'muted' }, 'Looking…');
+  const chosen = S.usageAccount ? [S.usageAccount] : null;
+  const rows = got.rows.filter((r) => (!chosen || chosen.includes(r.account)) && metricOf(r.tokens) > 0)
+    .sort((a, b) => metricOf(b.tokens) - metricOf(a.tokens)).slice(0, 10);
+  if (!rows.length) return h('p', { class: 'muted' }, 'None of the saved conversations used tokens that day.');
+  const max = metricOf(rows[0].tokens);
+  return h('div', { class: 'bars' }, rows.map((r) => {
+    const item = findItem(`${r.account}|${r.sessionId}`);
+    const name = item ? item.name : r.title || r.sessionId.slice(0, 8);
+    return h('button', { type: 'button', class: 'bar-row bar-button', disabled: !item, title: item ? 'Quick Look' : 'No longer listed',
+      onclick: async () => {
+        if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+        S.selected = item.key;
+        S.quickLook = true;
+        render();
+      } },
+      h('span', { class: 'bar-name' }, h('span', { class: 'tagdot', style: { '--acct': accountColor(r.account) } }), ' ', name),
+      h('span', { class: 'bar-track' }, h('span', { class: 'bar', style: { width: `${Math.max(1, (metricOf(r.tokens) / max) * 100)}%`, '--fill': accountColor(r.account) } })),
+      h('span', { class: 'bar-value' }, tokens(metricOf(r.tokens))));
+  }));
+}
+
+// Full screen: the tooltip goes along (only the full-screen part of the page shows), and
+// anything the page put off while it was up is drawn on the way out.
+document.addEventListener('fullscreenchange', () => {
+  const full = skyFull();
+  if (SKY.fullButton) {
+    SKY.fullButton.replaceChildren(window.ccIcon(full ? 'minimize' : 'maximize'));
+    SKY.fullButton.setAttribute('aria-label', full ? 'Leave full screen' : 'Full screen');
+    SKY.fullButton.title = full ? 'Leave full screen' : 'Full screen';
+  }
+  (full ? SKY.wrap : document.body).append($('#tip'));
+  untip();
+  if (SKY.scene) {
+    SKY.scene.resize();
+    if (full) SKY.canvas.focus({ preventScroll: true });
+  }
+  if (!full && SKY.pending) { SKY.pending = false; render(); }
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => skyPalette());
+
+// A CSS colour as [r, g, b], whatever form it is written in, by drawing it.
+let colourProbe = null;
+function rgbOf(color) {
+  colourProbe = colourProbe || document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+  colourProbe.clearRect(0, 0, 1, 1);
+  colourProbe.fillStyle = '#000';
+  colourProbe.fillStyle = color;
+  colourProbe.fillRect(0, 0, 1, 1);
+  const [r, g, b] = colourProbe.getImageData(0, 0, 1, 1).data;
+  return [r, g, b];
+}
+
+// Small round swatches that pick the heat maps' colour, kept in this browser.
+function heatPicker() {
+  return h('div', { class: 'heat-picker', role: 'radiogroup', 'aria-label': 'Heat map colour' },
+    HEATS.map(([id, name, swatch]) => h('label', { class: 'heat-swatch', title: name, style: { '--swatch': swatch } },
+      h('input', { type: 'radio', name: 'heat', 'aria-label': name, checked: S.heat === id, onchange: () => {
+        S.heat = id;
+        store('cc-concept-heat', id);
+        render();
+      } }))));
 }
 
 // When in the week Claude is used: weekday by hour of the day, on this browser's clock.
@@ -1131,6 +1490,8 @@ async function loadHistory() {
 
 // Accounts change in Settings and the window follows. A change of look is CSS's alone.
 window.addEventListener('cc-settings-changed', (event) => {
+  // The flat heat maps follow the look by CSS; the 3D one is drawn, so it takes the new colours.
+  if (event.detail && event.detail.kind === 'appearance') skyPalette();
   if (event.detail && event.detail.kind !== 'accounts') return;
   signature = '';
   S.usage = null;

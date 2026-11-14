@@ -1,4 +1,6 @@
-// Records the README demo: docs/demo.mp4 (a narrated tour of the page) and docs/demo.png.
+// Records the README demo: docs/demo.mp4 (a one-minute launch film for the page,
+// told the way a keynote tells it: title cards, short lines, a soft music bed) and
+// docs/demo.png (the classic layout, as a still).
 //
 // It builds a made-up home folder with three accounts, starts cc-sessions on it
 // with the tests' fake `claude`, drives the page in headless Chrome, and encodes
@@ -12,9 +14,10 @@
 //
 //   sh docs/record-demo/setup-voice.sh     (once, for the Kokoro voice)
 //   cargo build --release
-//   node docs/record-demo/record.mjs [--keep]
+//   node docs/record-demo/record.mjs [--keep] [--still] [--no-music]
 //
 // --keep leaves the demo home and the captured frames in place for a look.
+// --still makes only docs/demo.png. --no-music leaves out the music bed.
 // CHROME, FFMPEG, FFPROBE and SAY name the programs if they are not in the usual place.
 // DEMO_WORK_DIR is where the frames go while recording (about 500 MB; default
 // the system's temporary folder).
@@ -41,6 +44,7 @@ const SAY = process.env.SAY || 'say';
 const KEEP = process.argv.includes('--keep');
 // Only docs/demo.png: no narration, no recording.
 const STILL_ONLY = process.argv.includes('--still');
+const NO_MUSIC = process.argv.includes('--no-music');
 
 // Short on purpose: the resume command in a session's details prints this path.
 const HOME = '/tmp/alex';
@@ -70,7 +74,11 @@ const VOICE = { lead: 0.3, tail: 0.4 };
 // that it does not click. The finished track is brought to `loudness` LUFS with
 // its true peak under `peak` dB; `peak` is a little under the -1.5 dB wanted in
 // the video, since AAC encoding lifts the peaks slightly.
-const SOUND = { rate: 48000, bitrate: '128k', silence: -50, keep: 0.02, fade: 0.015, loudness: -16, peak: -2, range: 11 };
+// With the music bed the quiet stretches between lines widen the range, so it is allowed more (`rangeWithMusic`).
+const SOUND = { rate: 48000, bitrate: '128k', silence: -50, keep: 0.02, fade: 0.015, loudness: -16, peak: -2, range: 11, rangeWithMusic: 20 };
+// The music bed: written on this machine (compose), set `level` dB under the voice
+// before the mix, and pushed down further while the voice speaks.
+const MUSIC = { level: -15, duckThreshold: 0.03, duckRatio: 5 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const log = (...words) => console.log(...words);
@@ -245,8 +253,8 @@ function buildDemo() {
       const cwd = FOLDERS[s.folder];
       const startedAt = now - s.started;
       if (s.kind === 'interactive') {
-        // `fake-claude sleep` lives for two minutes, so these start right before the recording.
-        const child = spawn(path.join(BIN, 'claude'), ['sleep'], { stdio: 'ignore', env: { PATH: '/usr/bin:/bin' } });
+        // `fake-claude sleep 300` lives five minutes, longer than the narration, the still and the tour together.
+        const child = spawn(path.join(BIN, 'claude'), ['sleep', '300'], { stdio: 'ignore', env: { PATH: '/usr/bin:/bin' } });
         standIns.push(child);
         const record = { pid: child.pid, sessionId, cwd, startedAt, procStart: procStart(child.pid), kind: 'interactive',
           name: s.name, status: s.status, updatedAt: now - s.updated, statusUpdatedAt: now - s.updated };
@@ -272,12 +280,55 @@ function buildDemo() {
       type: 'user', cwd, sessionId, timestamp: iso(started - i * 9 * MIN), message: { role: 'user', content },
     }));
     lines.splice(1, 0, { type: 'ai-title', aiTitle: title, sessionId });
+    lines.push(...replies(title, sessionId, now - ago));
     const file = path.join(HOME, `.claude-${account}`, 'projects', cwd.replaceAll('/', '-'), `${sessionId}.jsonl`);
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
     // The page shows the file's modification time as the conversation's date.
     utimesSync(file, new Date(now - ago), new Date(now - ago));
   }
+  // One favourite, so the Finder layout's sidebar shows what pinning a folder does.
+  writeJson(path.join(STATE, 'pins.json'), { version: 1, sessions: [], folders: ['~/code/storefront'] });
+}
+
+// A few weeks of model replies before `end`, so the Usage view has a year that
+// looks lived in: mostly weekday working hours, three models, sizes like real
+// ones. Seeded by the title, so every run makes the same.
+function replies(title, sessionId, end) {
+  let seed = parseInt(createHash('sha1').update(title).digest('hex').slice(0, 8), 16);
+  const random = () => {
+    seed = (seed + 0x6d2b79f5) >>> 0;
+    let t = seed;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const between = (low, high) => Math.round(low + random() * (high - low));
+  const span = between(3, 21);
+  const out = [];
+  for (let i = 0, count = between(25, 70); i < count; i++) {
+    const day = new Date(end - Math.floor(random() * span) * DAY);
+    // Weekends are quieter: most of their replies move to the Friday before.
+    if ((day.getDay() === 0 || day.getDay() === 6) && random() < 0.75) day.setDate(day.getDate() - (day.getDay() === 0 ? 2 : 1));
+    day.setHours(random() < 0.1 ? between(20, 23) : between(9, 18), between(0, 59), between(0, 59), 0);
+    const at = Math.min(day.getTime(), end - MIN);
+    const pick = random();
+    const model = pick < 0.6 ? 'claude-opus-5-5' : pick < 0.95 ? 'claude-sonnet-5-5' : 'claude-haiku-5-5';
+    const size = model === 'claude-haiku-5-5' ? 0.4 : 1;
+    out.push({
+      type: 'assistant', sessionId, timestamp: new Date(at).toISOString(),
+      message: {
+        model, id: `msg_${sessionId.slice(0, 8)}_${i}`, role: 'assistant', content: [{ type: 'text', text: 'Done.' }],
+        usage: {
+          input_tokens: between(2, 40),
+          output_tokens: Math.round(between(200, 3500) * size),
+          cache_creation_input_tokens: Math.round(between(1000, 25000) * size),
+          cache_read_input_tokens: Math.round(between(15000, 350000) * size),
+        },
+      },
+    });
+  }
+  return out;
 }
 
 // ----------------------------------------------------------------- the tool
@@ -410,9 +461,49 @@ function installOverlay() {
     'box-shadow': '0 6px 20px rgb(10 20 35 / 0.3)', opacity: '0', transition: 'opacity 180ms ease',
   });
 
-  layer.append(caption, ring, pointer);
+  // Title cards: black, the full picture, large type. Above the pointer, so it disappears behind them.
+  const card = css(document.createElement('div'), {
+    position: 'absolute', inset: '0', display: 'grid', 'place-items': 'center', background: '#000000',
+    opacity: '0', transition: 'opacity 520ms ease',
+  });
+  const stack = css(document.createElement('div'), {
+    display: 'flex', 'flex-direction': 'column', 'align-items': 'center', gap: '20px', 'text-align': 'center',
+    transform: 'translateY(14px)', transition: 'transform 900ms cubic-bezier(0.2, 0.7, 0.2, 1), opacity 320ms ease',
+  });
+  const face = '-apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", system-ui, sans-serif';
+  const title = css(document.createElement('div'), { font: `600 66px/1.08 ${face}`, 'letter-spacing': '-0.035em', color: '#f5f5f7' });
+  const subtitle = css(document.createElement('div'), {
+    font: `500 26px/1.3 ${face}`, 'letter-spacing': '-0.01em', color: '#a1a1a6', opacity: '0', transition: 'opacity 700ms ease 250ms',
+  });
+  const line = css(document.createElement('div'), {
+    font: '500 19px/1.4 ui-monospace, "SF Mono", Menlo, monospace', color: '#e8e8ed', padding: '10px 18px',
+    border: '1px solid rgb(255 255 255 / 0.22)', 'border-radius': '12px', opacity: '0', transition: 'opacity 700ms ease 500ms',
+  });
+  stack.append(title, subtitle, line);
+  card.append(stack);
+
+  layer.append(caption, ring, pointer, card);
   document.body.append(layer);
   layer.showPopover();
+  // A title glows from white into a soft blue and violet; plain ones stay white.
+  const paint = (glow) => {
+    if (glow) {
+      css(title, { background: 'linear-gradient(92deg, #f5f5f7 0%, #9ec3ff 55%, #c6a7ff 100%)', '-webkit-background-clip': 'text',
+        'background-clip': 'text', '-webkit-text-fill-color': 'transparent' });
+    } else {
+      css(title, { background: 'none', '-webkit-text-fill-color': '#f5f5f7' });
+    }
+  };
+  const fill = ({ title: t = '', subtitle: s = '', line: l = '', glow = false }) => {
+    title.textContent = t;
+    subtitle.textContent = s;
+    line.textContent = l;
+    line.style.display = l ? 'block' : 'none';
+    paint(glow);
+    subtitle.style.opacity = s ? '1' : '0';
+    line.style.opacity = l ? '1' : '0';
+  };
+  let carded = false;
 
   let raisedFor = null;
   const place = (el, x, y, extra = '') => { el.style.transform = `translate(${x}px, ${y}px) ${extra}`; };
@@ -430,6 +521,29 @@ function installOverlay() {
       ring.style.transition = 'transform 420ms ease-out, opacity 420ms ease-out';
       ring.style.opacity = '0';
       place(ring, x, y, 'scale(1.15)');
+    },
+    // Shows a card, or changes the one showing: the old words fade out and the new ones in.
+    card(words) {
+      if (!carded) {
+        subtitle.style.opacity = '0';
+        line.style.opacity = '0';
+        title.textContent = '';
+        stack.style.transform = 'translateY(14px)';
+        card.style.opacity = '1';
+        card.getBoundingClientRect();
+        fill(words);
+        stack.style.transform = 'none';
+        carded = true;
+      } else if (words.title !== title.textContent) {
+        stack.style.opacity = '0';
+        setTimeout(() => { stack.style.transform = 'translateY(10px)'; fill(words); stack.getBoundingClientRect(); stack.style.opacity = '1'; stack.style.transform = 'none'; }, 340);
+      } else {
+        fill(words);
+      }
+    },
+    uncard() {
+      card.style.opacity = '0';
+      carded = false;
     },
     caption(text) {
       caption.style.opacity = '0';
@@ -455,6 +569,13 @@ function installOverlay() {
   };
 }
 
+const KEYS = {
+  space: [' ', 'Space', 32, ' '],
+  escape: ['Escape', 'Escape', 27],
+  '3': ['3', 'Digit3', 51, '3'],
+  ',': [',', 'Comma', 188, ','],
+};
+
 // The moves a person would make, drawn by the overlay and sent as real mouse
 // events too, so hover and focus states show up.
 function actor(page) {
@@ -466,6 +587,8 @@ function actor(page) {
   const me = {
     hold: sleep,
     caption: (text) => js`__demo.caption(${text})`,
+    card: (words) => js`__demo.card(${words})`,
+    uncard: () => js`__demo.uncard()`,
     async start() {
       await page.evaluate(`(${installOverlay})()`);
       await js`__demo.point(${at.x}, ${at.y}, 0)`;
@@ -521,6 +644,27 @@ function actor(page) {
         await sleep(perKey);
       }
     },
+    async dblclick(selector, where = {}) {
+      await me.moveTo(selector, where);
+      await js`__demo.press(${at.x}, ${at.y})`;
+      for (const clickCount of [1, 2]) {
+        await mouse('mousePressed', { button: 'left', clickCount });
+        await sleep(45);
+        await mouse('mouseReleased', { button: 'left', clickCount });
+        await sleep(70);
+      }
+      await js`__demo.raise()`;
+      await sleep(160);
+    },
+    // A key press, with ⌘ when `meta` is set. `name` is a key from KEYS.
+    async key(name, meta = false) {
+      const [key, code, keyCode, text] = KEYS[name];
+      const base = { key, code, windowsVirtualKeyCode: keyCode, modifiers: meta ? 4 : 0 };
+      await page.send('Input.dispatchKeyEvent', { type: 'keyDown', ...base, ...(text && !meta ? { text } : {}) });
+      await page.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
+      await sleep(120);
+      await js`__demo.raise()`;
+    },
     async erase(selector) {
       const length = await js`document.querySelector(${selector}).value.length`;
       for (let n = length - 1; n >= 0; n--) {
@@ -534,125 +678,116 @@ function actor(page) {
 
 // --------------------------------------------------------------------- tour
 
-const CLOSE_ME = 'Fix cart badge count on mobile';
 const LOOK_AT = 'Migrate checkout to the new payments API';
 
-// What is said in each scene of the tour, in order, written the way it is to be
-// spoken ("C C sessions" is how the voice gets cc-sessions right). A scene is
-// held until its line has been said, so a longer line makes a longer scene.
+// What is said in each scene, in order, written the way it is to be spoken
+// ("C C sessions" is how the voice gets cc-sessions right). A scene is held
+// until its line has been said, so a longer line makes a longer scene. Scenes
+// whose name starts with "card" open on a title card; the music swells there.
 const NARRATION = [
-  "If you use Claude Code with more than one account, you know the problem: sessions everywhere, and no single place to see them. This is C C sessions. Every session on your machine, from every account, grouped by the project it's working in.",
-  'Spot the ones waiting on you with a filter, or search for a project by name.',
-  "Open a session to see what it's been doing, and the exact command to pick it back up.",
-  'Done with one? Close it right here. It stops, but the conversation is kept, so you can resume it whenever you like.',
-  'History keeps every past conversation in one searchable list, with a preview of what you asked.',
-  "Your accounts live here too. Adding another one takes a name, and that's it.",
-  "Prefer dark mode? It's one click.",
-  "And when you're finished, disconnect. The tool stops, and your Claude sessions carry on. C C sessions is free and open source, for Mac, Windows and Linux.",
+  'Every Claude Code session. Every account. One place.',
+  'Introducing the Finder layout.',
+  'Your projects are folders, and your sessions are the files inside. Open them, just like you would on a Mac.',
+  'Browse in columns, and see everything at a glance.',
+  'And now, see every token you use. Day by day, account by account.',
+  'Make it yours, with dark mode, new templates, and your own colour.',
+  'All your accounts, in one place.',
+  'One more thing. It is free, and open source.',
+  'C C sessions two point five. Available now.',
 ];
 
-// `scene` starts the next scene, once the one before has had time for its
-// narration. `scene.said()` waits here until this scene's line has been said,
-// and `scene.left()` is how many seconds of that are still to come.
+// The tour runs in the Finder layout, which main() opens with the first card
+// already showing. `scene` starts the next scene once the one before has had
+// time for its line; `scene.said()` waits for this scene's line to end.
 async function tour(a, scene) {
-  await scene('1 sessions');
-  await a.caption('Claude Code sessions from every account, in one place.');
-  // The first line is a long one. So that the picture does not stand still for
-  // all of it, the pointer wanders over the list while it is said, at the
-  // line's own pace: up to the first folder, down beside its sessions, over to
-  // the folder's name, then to the status filters. Nothing is clicked.
-  // Without narration this is a short look at the list, as it always was.
-  const line = scene.left();
-  if (line > 6) {
-    const pace = (ms) => Math.round(ms * line / 15);
-    const beside = { inside: '.row-name', dx: 440 };   // the gap between a session's name and its account
-    await a.hold(pace(1800));
-    await a.moveTo('.row', { text: LOOK_AT, ...beside, over: pace(2800) });
-    await a.hold(pace(1900));
-    await a.moveTo('.row', { text: 'Write tests for the discount codes', ...beside, over: pace(2600) });
-    await a.hold(pace(700));
-    await a.moveTo('.group-head', { text: 'storefront', inside: '.path', fx: 1.1, fy: 0.6, over: pace(1700) });
-    await a.hold(pace(1500));
-    await a.moveTo('#chips .chip', { text: 'Working', fy: 0.75, over: pace(1300) });
-  } else {
-    await a.hold(3000);
-  }
+  // After a line, a beat before the next thing happens.
+  const beat = () => a.hold(1000);
 
-  await scene('2 filter and search');
-  await a.caption('Filter by status, or search by folder or name.');
-  await a.click('#chips .chip', { text: 'Blocked' });
-  await a.hold(1000);
-  await a.click('#chips .chip', { text: 'Open' });
-  await a.hold(300);
-  await a.click('.search', { dx: 150 });
-  await a.type('store');
-  await a.hold(1000);
-  await a.erase('.search');
-  await a.hold(300);
-
-  await scene('3 details');
-  await a.caption('Open a session to see what it is doing.');
-  await a.click('.row', { text: LOOK_AT, inside: '.row-name', dx: 150 });
-  await a.hold(2500);
-  // The details stay open for as long as they are talked about.
+  await scene('card open');
+  await a.hold(2300);
+  await a.card({ title: 'cc-sessions', subtitle: 'Every session. Every account. One place.' });
   await scene.said();
-  await a.click('.row', { text: LOOK_AT, inside: '.row-name', dx: 150 });
-
-  await scene('4 close');
-  await a.caption('Close a session. Its conversation is kept.');
-  await a.click('.row', { text: CLOSE_ME, inside: '.row-actions .btn' });
-  await a.hold(1100);
-  await a.click('#dialog .btn-danger');
-  await a.waitFor(`document.querySelectorAll('#toasts .toast').length > 0`, 'the Closed toast');
-  await a.hold(700);
-  await a.click('#chips .chip', { text: 'Closed' });
-  await a.caption('Closed sessions can be resumed later.');
-  // Only pointed at: Resume would open a real terminal window.
-  await a.moveTo('.row', { text: CLOSE_ME, inside: '.row-actions .btn' });
-  await a.hold(1100);
-  await a.click('#chips .chip', { text: 'Open' });
-
-  await scene('5 history');
-  await a.caption('History keeps every saved conversation.');
-  await a.click('.tab', { text: 'History' });
-  await a.waitFor(`document.querySelectorAll('.row-history').length > 0`, 'the history list');
-  await a.hold(900);
-  await a.click('.search', { dx: 150 });
-  await a.type('cart');
-  await a.hold(500);
-  await a.click('.row', { text: CLOSE_ME, inside: '.row-name', dx: 150 });
-  await a.hold(2100);
-
-  await scene('6 accounts');
-  await a.caption('Each account, with its login and plan.');
-  await a.click('.tab', { text: 'Accounts' });
-  await a.hold(1200);
-  await a.caption('Add another account.');
-  await a.click('.toolbar .btn-primary');
-  await a.hold(250);
-  await a.type('side-project', 70);
-  await a.hold(500);
-  await a.click('#dialog .btn-primary');
-  await a.waitFor(`document.querySelectorAll('.account').length === 4`, 'the new account card');
-  // Beside "Not logged in", clear of the text and of the Log in button below it.
-  await a.moveTo('.account', { text: 'side-project', inside: '.warn', fx: 1.65, fy: 0.55 });
   await a.hold(1400);
 
-  await scene('7 dark theme');
-  await a.caption('Light or dark.');
-  await a.choose('#theme', 'dark');
-  await a.hold(700);
-  await a.click('.tab', { text: 'Sessions' });
-  await a.hold(1200);
-
-  await scene('8 disconnect');
-  await a.caption('Disconnect when you are done. Your sessions keep running.');
-  await a.click('#disconnect');
-  await a.hold(1000);
-  await a.click('#dialog .btn-primary');
-  await a.waitFor(`!document.querySelector('#offline').hidden`, 'the Disconnected screen');
-  await a.hold(2100);
+  await scene('card finder');
+  await a.card({ title: 'Introducing the Finder layout.', glow: true });
   await scene.said();
+  await a.hold(1300);
+  await a.uncard();
+  await a.hold(1000);
+
+  await scene('folders');
+  await a.dblclick('.cell', { text: '~/code', inside: '.ic-wrap' });
+  await a.hold(900);
+  await a.dblclick('.cell', { text: 'storefront', inside: '.ic-wrap' });
+  await a.hold(1000);
+  await a.click('.cell', { text: LOOK_AT, inside: '.ic-wrap' });
+  await a.hold(700);
+  await a.key('space');
+  await a.waitFor(`!document.querySelector('#ql').hidden`, 'Quick Look');
+  await a.hold(2600);
+  await scene.said();
+  await beat();
+  await a.key('escape');
+  await a.hold(500);
+
+  await scene('columns');
+  await a.key('3', true);
+  await a.hold(900);
+  await a.click('.col-item', { text: LOOK_AT });
+  await a.hold(2400);
+  await scene.said();
+  await beat();
+
+  await scene('card usage');
+  await a.card({ title: 'Usage.', glow: true });
+  await a.hold(2000);
+  await a.click('.sb-item', { text: 'Usage' });
+  await a.waitFor(`document.querySelector('.cal')`, 'the heat map');
+  await a.uncard();
+  await a.hold(900);
+  await a.moveTo('.cal .heat.l2', { over: 900 });
+  await a.hold(500);
+  await a.moveTo('.cal .heat.l4', { over: 1100 });
+  await a.hold(1800);
+  await scene.said();
+  await beat();
+
+  await scene('card settings');
+  await a.card({ title: 'Make it yours.' });
+  await a.hold(1800);
+  await a.uncard();
+  await a.hold(400);
+  await a.key(',', true);
+  await a.waitFor(`document.querySelector('.st-window[open]')`, 'Settings');
+  await a.hold(700);
+  await a.click('.st-choice', { text: 'Dark' });
+  await a.hold(1100);
+  await a.click('.st-template', { text: 'Paper' });
+  await a.hold(1100);
+  await a.click('.st-swatch[title="Purple"]');
+  await a.hold(1300);
+  await scene.said();
+
+  await scene('accounts');
+  await a.click('.st-nav', { text: 'Accounts' });
+  await a.waitFor(`document.querySelectorAll('.st-account').length > 0`, 'the accounts');
+  await a.hold(2200);
+  await scene.said();
+  await beat();
+  await a.click('.st-close');
+  await a.hold(700);
+
+  await scene('card one more thing');
+  await a.card({ title: 'One more thing.' });
+  await scene.said();
+  await a.hold(1600);
+
+  await scene('card end');
+  await a.card({ title: 'cc-sessions 2.5', subtitle: 'Available now  ·  macOS  ·  Windows  ·  Linux', line: 'github.com/barath-dev/cc-sessions', glow: true });
+  await a.hold(1600);
+  await scene.said();
+  await a.hold(3200);
 }
 
 // ----------------------------------------------------------------- narration
@@ -712,27 +847,126 @@ function speak(dir) {
   return clips;
 }
 
-// Lays the clips on one track at the times they are said, `seconds` long, and
-// brings it to the wanted loudness. That takes two passes of ffmpeg's loudnorm:
-// one to measure the track, one to turn all of it up or down by the same amount.
-function mixNarration(speech, seconds, file) {
-  const inputs = speech.flatMap((s) => ['-i', s.file]);
+// The music bed: an ambient pad written here, sample by sample, so it is the
+// project's own. Four chords, each a few seconds, crossfaded; every note is a
+// soft sine with two quiet overtones, doubled slightly out of tune left and right;
+// then a gentle low-pass and a small room of feedback delays. It swells a little
+// at each title card (`swells`, in seconds). Written as a 16-bit stereo WAV.
+function compose(seconds, swells, file) {
+  const rate = SOUND.rate;
+  const total = Math.ceil(seconds * rate);
+  const CHORDS = [
+    [130.81, 196.0, 246.94, 293.66, 329.63],   // C major 9
+    [110.0, 164.81, 196.0, 246.94, 261.63],    // A minor 9
+    [87.31, 130.81, 164.81, 220.0, 246.94],    // F major 7, with the 11th
+    [98.0, 146.83, 164.81, 220.0, 293.66],     // G6, suspended
+  ];
+  const BAR = 7.5;     // seconds each chord holds
+  const BLEND = 2.5;   // seconds of crossfade between chords
+  const left = new Float32Array(total);
+  const right = new Float32Array(total);
+  const tau = 2 * Math.PI;
+  for (let n = 0; n < total; n++) {
+    const t = n / rate;
+    const index = Math.floor(t / BAR);
+    const into = t - index * BAR;
+    // Raised-cosine crossfade into the next chord over the end of this one.
+    const fade = into > BAR - BLEND ? 0.5 - 0.5 * Math.cos(Math.PI * (into - (BAR - BLEND)) / BLEND) : 0;
+    let l = 0;
+    let r = 0;
+    for (const [chord, weight] of [[CHORDS[index % 4], 1 - fade], [CHORDS[(index + 1) % 4], fade]]) {
+      if (weight <= 0) continue;
+      for (const f of chord) {
+        const tone = (detune) => {
+          const p = tau * f * detune * t;
+          return Math.sin(p) + 0.3 * Math.sin(2 * p + 0.6) + 0.1 * Math.sin(3 * p + 1.3);
+        };
+        l += weight * tone(0.9985);
+        r += weight * tone(1.0015);
+      }
+    }
+    // A slow breath, and a swell near each card.
+    let lift = 1;
+    for (const at of swells) {
+      const d = t - at;
+      if (d > -0.5 && d < 3) lift += 0.45 * Math.exp(-((d - 0.6) ** 2) / 0.8);
+    }
+    const breath = (0.85 + 0.15 * Math.sin(tau * 0.08 * t)) * lift;
+    const edge = Math.min(1, t / 2.5, (seconds - t) / 3);
+    left[n] = l * breath * Math.max(0, edge);
+    right[n] = r * breath * Math.max(0, edge);
+  }
+  // Low-pass, then a small room: four feedback delays per side, a little different each side.
+  const filter = (data) => {
+    let y = 0;
+    for (let n = 0; n < total; n++) { y += 0.18 * (data[n] - y); data[n] = y; }
+  };
+  const room = (data, delays) => {
+    const wet = new Float32Array(total);
+    for (const ms of delays) {
+      const d = Math.round(ms * rate / 1000);
+      const echo = new Float32Array(total);
+      for (let n = d; n < total; n++) echo[n] = data[n - d] + 0.62 * echo[n - d];
+      for (let n = 0; n < total; n++) wet[n] += echo[n] / delays.length;
+    }
+    for (let n = 0; n < total; n++) data[n] = 0.7 * data[n] + 0.45 * wet[n];
+  };
+  filter(left); filter(right);
+  room(left, [43, 59, 71, 89]);
+  room(right, [47, 61, 79, 97]);
+  let peak = 0;
+  for (let n = 0; n < total; n++) peak = Math.max(peak, Math.abs(left[n]), Math.abs(right[n]));
+  const gain = peak ? 0.5 / peak : 0;   // about -6 dB at the loudest
+  const pcm = Buffer.alloc(44 + total * 4);
+  pcm.write('RIFF', 0); pcm.writeUInt32LE(36 + total * 4, 4); pcm.write('WAVE', 8);
+  pcm.write('fmt ', 12); pcm.writeUInt32LE(16, 16); pcm.writeUInt16LE(1, 20); pcm.writeUInt16LE(2, 22);
+  pcm.writeUInt32LE(rate, 24); pcm.writeUInt32LE(rate * 4, 28); pcm.writeUInt16LE(4, 32); pcm.writeUInt16LE(16, 34);
+  pcm.write('data', 36); pcm.writeUInt32LE(total * 4, 40);
+  for (let n = 0; n < total; n++) {
+    pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, left[n] * gain)) * 32767), 44 + n * 4);
+    pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, right[n] * gain)) * 32767), 46 + n * 4);
+  }
+  writeFileSync(file, pcm);
+}
+
+// Lays the clips on one track at the times they are said, adds the music bed
+// (if any) under it, ducked while the voice speaks, `seconds` long, and brings
+// it to the wanted loudness. That takes two passes of ffmpeg's loudnorm: one to
+// measure the track, one to turn all of it up or down by the same amount.
+function mixSound(speech, music, seconds, file) {
+  const inputs = [...speech.flatMap((s) => ['-i', s.file]), ...(music ? ['-i', music] : [])];
   // Mixed at full level (normalize=0): the clips never overlap, so nothing needs turning down.
   const delayed = speech.map((s, i) => `[${i}:a]adelay=${Math.round(s.from * 1000)}:all=1[s${i}]`);
   const length = seconds.toFixed(6);
-  const track = `${delayed.join(';')};${speech.map((_, i) => `[s${i}]`).join('')}`
-    + `amix=inputs=${speech.length}:duration=longest:normalize=0,apad=whole_dur=${length},atrim=end=${length}`;
-  const loudnorm = `loudnorm=I=${SOUND.loudness}:TP=${SOUND.peak}:LRA=${SOUND.range}:print_format=json`;
+  const voice = `${delayed.join(';')};${speech.map((_, i) => `[s${i}]`).join('')}`
+    + `amix=inputs=${speech.length}:duration=longest:normalize=0,apad=whole_dur=${length},atrim=end=${length},aformat=channel_layouts=stereo`;
+  const m = speech.length;
+  const track = !music ? voice
+    : `${voice},asplit[v][key];[${m}:a]volume=${MUSIC.level}dB,atrim=end=${length}[bed];`
+      + `[bed][key]sidechaincompress=threshold=${MUSIC.duckThreshold}:ratio=${MUSIC.duckRatio}:attack=30:release=450[ducked];`
+      + `[v][ducked]amix=inputs=2:duration=first:normalize=0`;
+  // The limiter takes the tops off the loudest syllables first, so loudnorm can turn the
+  // whole track up by one steady amount (its linear mode) instead of riding the level.
+  const loudnorm = `alimiter=limit=0.25:attack=5:release=60:level=disabled,loudnorm=I=${SOUND.loudness}:TP=${SOUND.peak}:LRA=${music ? SOUND.rangeWithMusic : SOUND.range}:print_format=json`;
+  if (music) {
+    const loudness = (filter, what) => {
+      const out = run(FFMPEG, ['-hide_banner', '-nostats', ...inputs, '-filter_complex', `${filter},ebur128=framelog=quiet`, '-f', 'null', '-'], what);
+      return Number((out.stderr.match(/I:\s+(-?[\d.]+) LUFS/g) || ['I: 0 LUFS']).pop().match(/-?[\d.]+/)[0]);
+    };
+    const said = loudness(voice, `Measuring the voice with ${FFMPEG}`);
+    const bed = loudness(`[${m}:a]volume=${MUSIC.level}dB,atrim=end=${length}`, `Measuring the music with ${FFMPEG}`);
+    log(`Before levelling: voice ${said} LUFS, music bed ${bed} LUFS (${(said - bed).toFixed(1)} dB under), and lower still while the voice speaks.`);
+  }
   // loudnorm prints what it measured as the last thing on stderr.
   const report = (out) => JSON.parse(out.stderr.slice(out.stderr.lastIndexOf('{'), out.stderr.lastIndexOf('}') + 1));
 
   const was = report(run(FFMPEG, ['-hide_banner', '-nostats', ...inputs, '-filter_complex', `${track},${loudnorm}`, '-f', 'null', '-'],
-    `Measuring the narration with ${FFMPEG}`));
+    `Measuring the sound with ${FFMPEG}`));
   const measured = `measured_I=${was.input_i}:measured_TP=${was.input_tp}:measured_LRA=${was.input_lra}:measured_thresh=${was.input_thresh}:offset=${was.target_offset}:linear=true`;
   // loudnorm works at 192 kHz; the track goes back to its own rate.
   const now = report(run(FFMPEG, ['-hide_banner', '-nostats', '-y', ...inputs,
-    '-filter_complex', `${track},${loudnorm}:${measured},aresample=${SOUND.rate}`, '-c:a', 'pcm_s16le', file], `Levelling the narration with ${FFMPEG}`));
-  log(`Narration level: ${was.input_i} LUFS with a true peak of ${was.input_tp} dB as spoken, `
+    '-filter_complex', `${track},${loudnorm}:${measured},aresample=${SOUND.rate}`, '-c:a', 'pcm_s16le', file], `Levelling the sound with ${FFMPEG}`));
+  log(`Sound level: ${was.input_i} LUFS with a true peak of ${was.input_tp} dB as mixed, `
     + `${now.output_i} LUFS and ${now.output_tp} dB in the track (${now.normalization_type} gain).`);
 }
 
@@ -812,7 +1046,7 @@ const frameCount = (seconds) => Math.round(seconds * VIDEO.fps);
 // latest one drawn by its time. ffmpeg's concat list would do the same, but it
 // rounds image durations to 1/25 s, which adds up over two thousand frames.
 //
-// `narration` is the sound track, made by mixNarration to the exact length of
+// `narration` is the sound track, made by mixSound to the exact length of
 // the picture, or null for a video without sound.
 async function encode({ frames, seconds }, narration, target) {
   const count = frameCount(seconds);
@@ -879,6 +1113,11 @@ async function main() {
       await a.waitFor(`document.querySelectorAll('.row').length > 0 && document.querySelector('#conn-state').dataset.state === 'online'
         && document.querySelector('.list-note') && !document.querySelector('.list-note').textContent.startsWith('Reading')`, 'the sessions list');
     };
+    const openFinder = async () => {
+      await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/finder?t=${token}` });
+      await a.waitFor(`document.querySelectorAll('.cell').length > 0 && document.querySelectorAll('.sb-item').length > 5`, 'the Finder layout');
+      await sleep(800);
+    };
     const a = actor(page);
 
     // The still: every session, with one picked so its details show. Reduced motion stops the Working dots mid-pulse.
@@ -896,9 +1135,11 @@ async function main() {
 
     await page.send('Emulation.setEmulatedMedia', { features: [] });
     await metrics(VIEW, SCALE);
-    await open();
+    await openFinder();
     await a.start();
-    await sleep(400);
+    // The film opens on black, with the name.
+    await a.card({ title: 'cc-sessions' });
+    await sleep(900);
     const time = timekeeper(clips);
     const take = await record(page, path.join(work, 'frames'), () => {
       time.start();
@@ -909,8 +1150,15 @@ async function main() {
 
     let narration = null;
     if (clips) {
+      const length = frameCount(take.seconds) / VIDEO.fps;
+      let music = null;
+      if (!NO_MUSIC) {
+        music = path.join(work, 'narration', 'music.wav');
+        compose(length, time.scenes.filter((s) => s.name.startsWith('card')).map((s) => s.at), music);
+        log('Music: an ambient pad written by compose(), swelling at each title card.');
+      }
       narration = path.join(work, 'narration', 'track.wav');
-      mixNarration(time.scenes.map((s) => s.speech), frameCount(take.seconds) / VIDEO.fps, narration);
+      mixSound(time.scenes.map((s) => s.speech), music, length, narration);
     }
     await encode(take, narration, path.join(docs, 'demo.mp4'));
     log(`Wrote docs/demo.mp4 (${(statSync(path.join(docs, 'demo.mp4')).size / 1e6).toFixed(2)} MB)`);

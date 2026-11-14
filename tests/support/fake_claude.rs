@@ -35,6 +35,8 @@ fn main() {
 
     match words.as_slice() {
         ["sleep"] => std::thread::sleep(std::time::Duration::from_secs(120)),
+        // The demo recording asks for longer, so its stand-in sessions outlast the tour.
+        ["sleep", seconds] => std::thread::sleep(std::time::Duration::from_secs(seconds.parse().unwrap_or(120))),
         ["--version"] => println!("0.0.0 (fake claude)"),
         ["agents", "--json", "--all"] => {
             let text = fs::read_to_string(config_dir().join("fake-agents.json")).unwrap_or_else(|_| "[]".into());

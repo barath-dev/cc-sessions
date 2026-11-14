@@ -559,6 +559,37 @@ fn pins_and_colours_are_kept_outside_account_folders() {
 }
 
 #[test]
+fn usage_by_session_for_a_day() {
+    let mut m = Machine::new("usage", 47813);
+    let project = m.account("work").join("projects").join("-work-app");
+    fs::create_dir_all(&project).unwrap();
+    let session_id = "aaaa0004-3333-4444-5555-666677778888";
+    let reply = |id: &str, at: &str, out: u64| {
+        format!(r#"{{"type":"assistant","timestamp":"{at}","message":{{"model":"claude-opus-5-5","id":"{id}","usage":{{"input_tokens":1,"output_tokens":{out},"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#)
+    };
+    let transcript = [
+        r#"{"type":"user","cwd":"/work/app","timestamp":"2026-11-10T06:20:00.000Z","message":{"role":"user","content":"fix the login bug"}}"#.to_string(),
+        reply("msg_1", "2026-11-10T06:30:00.000Z", 100),
+        reply("msg_2", "2026-11-11T06:30:00.000Z", 900),
+    ];
+    fs::write(project.join(format!("{session_id}.jsonl")), transcript.join("\n")).unwrap();
+    m.seal();
+
+    assert!(m.run(&["--no-open"]).status.success());
+    let token = m.token();
+    // 2026-11-10 00:00 UTC is hour 498408.
+    let (status, body) = m.get("/api/usage/sessions?from=498408&to=498432", Some(&token), None);
+    assert_eq!(status, 200, "{body}");
+    let day: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(day["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(day["sessions"][0]["sessionId"], session_id);
+    assert_eq!(day["sessions"][0]["tokens"]["output"], 100, "only that day's reply: {body}");
+    let (_, body) = m.get("/api/usage/sessions?from=400000&to=400024", Some(&token), None);
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["sessions"], json!([]));
+    assert_eq!(m.get("/api/usage/sessions", Some(&token), None).0, 400, "hours are required");
+}
+
+#[test]
 fn server_guards_and_disconnect() {
     let mut m = Machine::new("server", 47808);
     m.agents("work", json!([background("aaaa0001", "blocked", None)]));

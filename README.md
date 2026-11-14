@@ -15,9 +15,9 @@ It is an unofficial tool and is not affiliated with Anthropic.
 
 [![The Sessions view: a folder tree, sessions from three accounts in one list, and the details of the picked session beside it](docs/demo.png)](docs/demo.mp4)
 
-The screenshot and the one-minute narrated tour ([docs/demo.mp4](docs/demo.mp4)) use made-up
-demo data. The tour was recorded with an earlier version of the page, before the folder
-tree, the Finder layout and Settings.
+The screenshot shows the classic layout. The one-minute film
+([docs/demo.mp4](docs/demo.mp4)) introduces 2.5: the Finder layout, Usage, Settings and
+accounts. Both use made-up demo data.
 
 ## Install
 
@@ -98,7 +98,13 @@ files in them, accounts as tags in the sidebar.
   ⌘, for Settings.
 - **Usage** shows the tokens your sessions used: today, the last 7 and 30 days, a calendar
   heat map of every day, when in the week you use Claude, and totals by account, model
-  and session. Pick all tokens, without cache reads, or output only.
+  and session. Pick all tokens, without cache reads, or output only. The heat maps come in
+  blue, green, amber, purple, teal or your primary colour. **3D** raises the calendar into
+  a lit 3D object, a block per day as tall as its tokens, with height lines and the busiest
+  day and today marked. Pick a view (Angled, Front, Top, Side, Last 30 days, or keys 1–5),
+  drag to turn it, Shift-drag to move it, ⌘-scroll to zoom, or show it full screen. Click a
+  day (or move to it with the arrow keys and press Enter) to see its tokens by kind, hour
+  and account, how it compares with its week and the year, and the sessions that used them.
 
 ### Both layouts
 

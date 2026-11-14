@@ -46,6 +46,7 @@ const UI: &[(&str, &str, &[u8])] = &[
     ("/style.css", "text/css; charset=utf-8", include_bytes!("../ui/style.css")),
     ("/settings.js", "text/javascript; charset=utf-8", include_bytes!("../ui/settings.js")),
     ("/icons.js", "text/javascript; charset=utf-8", include_bytes!("../ui/icons.js")),
+    ("/sky.js", "text/javascript; charset=utf-8", include_bytes!("../ui/sky.js")),
     ("/settings.css", "text/css; charset=utf-8", include_bytes!("../ui/settings.css")),
     ("/favicon.svg", "image/svg+xml", include_bytes!("../ui/favicon.svg")),
     // The Finder view: the same sessions as a Finder-style browser. /concept is its first address.
@@ -291,6 +292,32 @@ impl App {
         Ok(json!({ "accounts": accounts }))
     }
 
+    /// The sessions that used tokens between two hours (hours since 1970, UTC, `from`
+    /// inclusive, `to` not), with their tokens in that time, most first. The page asks for
+    /// its own local day, so the hours come from it.
+    fn usage_sessions(&self, query: &str) -> Result<Value> {
+        let hour = |name: &str| {
+            query.split('&').find_map(|pair| pair.strip_prefix(name).and_then(|rest| rest.strip_prefix('='))).and_then(|v| v.parse::<i64>().ok())
+        };
+        let (Some(from), Some(to)) = (hour("from"), hour("to")) else {
+            return err("Missing 'from' and 'to': hours since 1970, UTC.");
+        };
+        let mut found: Vec<(u64, Value)> = Vec::new();
+        for item in history::history_items()? {
+            let mut used = Tokens::default();
+            for (_, tokens) in item.hours.iter().filter(|(at, _)| *at >= from && *at < to) {
+                used.add(tokens);
+            }
+            if used == Tokens::default() {
+                continue;
+            }
+            let total = used.input + used.output + used.cache_write + used.cache_read;
+            found.push((total, json!({ "account": item.account, "sessionId": item.session_id, "title": item.title, "tokens": used })));
+        }
+        found.sort_by_key(|(total, _)| std::cmp::Reverse(*total));
+        Ok(json!({ "sessions": found.into_iter().take(50).map(|(_, row)| row).collect::<Vec<_>>() }))
+    }
+
     // -- actions
 
     fn close(&self, keys: &[String]) -> Result<Value> {
@@ -514,6 +541,7 @@ fn static_file(path: &str) -> Option<(&'static str, Vec<u8>)> {
 
 fn handle(app: &App, mut request: Request) {
     let path = request.url().split('?').next().unwrap_or("").to_string();
+    let query = request.url().split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
     let host = header(&request, "Host");
     // Refuse anything that reached us under another name (DNS rebinding).
     let host_ok = host == format!("127.0.0.1:{}", app.port) || host == format!("localhost:{}", app.port);
@@ -542,6 +570,7 @@ fn handle(app: &App, mut request: Request) {
             "/api/state" => app.state(),
             "/api/history" => app.history(),
             "/api/usage" => app.usage(),
+            "/api/usage/sessions" => app.usage_sessions(&query),
             _ => return respond_json(request, 404, &json!({ "error": "Not found." })),
         }
     } else if *request.method() == Method::Post {
