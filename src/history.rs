@@ -12,13 +12,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::accounts;
+use crate::pins::Pins;
 use crate::store::{self, state_file};
 use crate::titles::Titles;
 use crate::util::{iso_to_ms, path_str, squash, Error, Result};
 
 const PREVIEW_CHARS: usize = 300;
 /// Raise when `Entry` gains something old cache entries do not have.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
+/// How many prompts are kept for searching: this many from each end of a conversation.
+const SEARCH_PROMPTS: usize = 20;
 const ARTIFACT_URLS: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
 
 /// A page the conversation published to, or opened on, claude.ai.
@@ -44,6 +47,8 @@ pub struct Entry {
     pub prompts: u32,
     pub first_prompt: Option<String>,
     pub last_prompts: Vec<String>,
+    /// What the person typed, one prompt to a line, for the page's search.
+    pub prompt_text: String,
     pub artifacts: Vec<Artifact>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unreadable: bool,
@@ -68,6 +73,8 @@ pub struct HistoryItem {
     pub title: String,
     /// True when `title` is a name given through this tool.
     pub renamed: bool,
+    /// Pinned to the top of the page through this tool.
+    pub pinned: bool,
     /// The folder the conversation ran in; empty when the transcript does not say.
     pub cwd: String,
     /// `cwd`, or the transcript's folder name when there is none.
@@ -77,6 +84,8 @@ pub struct HistoryItem {
     pub prompts: u32,
     pub first_prompt: Option<String>,
     pub last_prompts: Vec<String>,
+    #[serde(skip)]
+    pub prompt_text: String,
     pub artifacts: Vec<Artifact>,
 }
 
@@ -170,6 +179,7 @@ fn index_transcript(path: &Path) -> Entry {
         ..Entry::default()
     };
     let (mut custom, mut ai, mut agent) = (None, None, None);
+    let mut typed: Vec<String> = Vec::new();
     let Ok(file) = File::open(path) else {
         entry.unreadable = true;
         return entry;
@@ -241,6 +251,11 @@ fn index_transcript(path: &Path) -> Entry {
                 if entry.first_prompt.is_none() {
                     entry.first_prompt = Some(prompt.clone());
                 }
+                typed.push(prompt.clone());
+                // A long conversation is searched by how it began and where it got to.
+                if typed.len() > 2 * SEARCH_PROMPTS {
+                    typed.remove(SEARCH_PROMPTS);
+                }
                 entry.last_prompts.push(prompt);
                 if entry.last_prompts.len() > 3 {
                     entry.last_prompts.remove(0);
@@ -251,6 +266,7 @@ fn index_transcript(path: &Path) -> Entry {
     let custom = custom.filter(|t| t != "Untitled session");
     let from_prompt = entry.first_prompt.as_deref().map(|p| truncate(p, 80)).filter(|p| !p.is_empty());
     entry.title = custom.or(ai).or(agent).or(from_prompt);
+    entry.prompt_text = typed.join("\n");
     entry
 }
 
@@ -267,6 +283,7 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
     let cache: BTreeMap<String, Cached> =
         serde_json::from_value(store::read_json_or_null(&cache_file)).unwrap_or_default();
     let titles = Titles::load()?;
+    let pins = Pins::load()?;
     let mut fresh: BTreeMap<String, Cached> = BTreeMap::new();
     let mut items = Vec::new();
     let mut changed = false;
@@ -298,6 +315,7 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 session_id: entry.session_id.clone(),
                 title: given.map(String::from).or(entry.title.clone()).unwrap_or_else(|| format!("(no title) {file_name}")),
                 renamed: given.is_some(),
+                pinned: pins.has_session(&acc.dir, &entry.session_id),
                 cwd: entry.cwd.clone().unwrap_or_default(),
                 folder_label: entry.cwd.clone().unwrap_or(folder),
                 started_at: entry.started_at,
@@ -305,6 +323,7 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 prompts: entry.prompts,
                 first_prompt: entry.first_prompt.clone(),
                 last_prompts: entry.last_prompts.clone(),
+                prompt_text: entry.prompt_text.clone(),
                 artifacts: entry.artifacts.clone(),
             });
             fresh.insert(key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry });
@@ -389,10 +408,23 @@ mod tests {
         assert_eq!(entry.prompts, 2);
         assert_eq!(entry.first_prompt.as_deref(), Some("first question"));
         assert_eq!(entry.last_prompts, vec!["first question", "second question"]);
+        assert_eq!(entry.prompt_text, "first question\nsecond question");
         assert_eq!(entry.title.as_deref(), Some("Better title"));
         let links: Vec<(&str, &str)> = entry.artifacts.iter().map(|a| (a.url.as_str(), a.title.as_str())).collect();
         assert_eq!(links, [("https://claude.ai/artifact/6pwcDR94", "The plan"), ("https://claude.ai/artifact/Puen6az3", "Other page")]);
         assert_eq!(entry.artifacts[0].updated_at, Some(1794291720000));
+
+        // A long conversation keeps its first and last prompts for searching.
+        let many: Vec<String> = (0..50)
+            .map(|n| format!(r#"{{"type":"user","cwd":"/work/app","message":{{"role":"user","content":"prompt {n}"}}}}"#))
+            .collect();
+        fs::write(&path, many.join("\n")).unwrap();
+        let entry = index_transcript(&path);
+        let kept: Vec<&str> = entry.prompt_text.lines().collect();
+        assert_eq!(entry.prompts, 50);
+        assert_eq!(kept.len(), 2 * SEARCH_PROMPTS);
+        assert_eq!((kept[0], kept[SEARCH_PROMPTS - 1], kept[SEARCH_PROMPTS]), ("prompt 0", "prompt 19", "prompt 30"));
+        assert_eq!(kept.last(), Some(&"prompt 49"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -21,6 +21,7 @@ use crate::claude::{self, AuthInfo};
 use crate::closing;
 use crate::history::{self, Artifact};
 use crate::os;
+use crate::pins::{self, Pins};
 use crate::resume::{self, Target};
 use crate::sessions::{self, Session};
 use crate::store::{state_dir, state_file};
@@ -191,6 +192,7 @@ impl App {
                 json!({
                     "name": acc.name,
                     "alias": acc.alias,
+                    "color": acc.color,
                     "dir": tilde(&acc.dir),
                     "isDefault": acc.is_default(),
                     "removed": acc.removed,
@@ -209,6 +211,7 @@ impl App {
             "accounts": accounts,
             "sessions": sessions.iter().map(public).collect::<Vec<_>>(),
             "unregistered": accounts::unregistered_folders()?.iter().map(|p| tilde(p)).collect::<Vec<_>>(),
+            "pinnedFolders": Pins::load()?.folders(),
             "platform": {
                 "os": os::OS_NAME,
                 "command": accounts::load_config().command,
@@ -234,6 +237,7 @@ impl App {
                     "sessionId": item.session_id,
                     "title": item.title,
                     "renamed": item.renamed,
+                    "pinned": item.pinned,
                     "artifacts": links(&item.artifacts),
                     "cwd": tilde(&item.folder_label),
                     "startedAt": item.started_at,
@@ -241,6 +245,7 @@ impl App {
                     "prompts": item.prompts,
                     "firstPrompt": item.first_prompt,
                     "lastPrompts": item.last_prompts,
+                    "promptText": item.prompt_text,
                     "live": live,
                     "resumeCommand": (!item.cwd.is_empty()).then(|| resume::display_command(acc, &target)),
                 }))
@@ -300,14 +305,38 @@ impl App {
     /// Name a session, or with an empty title go back to Claude Code's own.
     fn rename(&self, account: &str, session_id: &str, title: &str) -> Result<Value> {
         let acc = accounts::get_account(account)?;
-        // Only name what is really there: a listed session or a saved conversation.
-        let listed = self.sessions(false)?.0.iter().any(|s| s.account == acc.name && s.session_id == session_id);
-        if !listed && !history::history_items()?.iter().any(|i| i.account == acc.name && i.session_id == session_id) {
+        // Only name what is really there.
+        if !self.known(&acc, session_id)? {
             return err("Session not found.");
         }
         let title = titles::set(&acc.dir, session_id, title)?;
         self.invalidate(false);
         Ok(json!({ "title": title }))
+    }
+
+    /// Pin or unpin a session, or a folder as the page names it.
+    fn pin(&self, body: &Value, pinned: bool) -> Result<Value> {
+        let text = |field: &str| body.get(field).and_then(Value::as_str).filter(|s| !s.is_empty());
+        if let Some(folder) = text("folder") {
+            pins::set_folder(folder, pinned)?;
+        } else {
+            let (Some(account), Some(session_id)) = (text("account"), text("sessionId")) else {
+                return err("Missing 'folder', or 'account' and 'sessionId'.");
+            };
+            let acc = accounts::get_account(account)?;
+            if !self.known(&acc, session_id)? {
+                return err("Session not found.");
+            }
+            pins::set_session(&acc.dir, session_id, pinned)?;
+        }
+        self.invalidate(false);
+        Ok(json!({ "pinned": pinned }))
+    }
+
+    /// Whether this is a listed session or a saved conversation of the account.
+    fn known(&self, acc: &Account, session_id: &str) -> Result<bool> {
+        let listed = self.sessions(false)?.0.iter().any(|s| s.account == acc.name && s.session_id == session_id);
+        Ok(listed || history::history_items()?.iter().any(|i| i.account == acc.name && i.session_id == session_id))
     }
 
     fn login(&self, name: &str, relogin: bool) -> Result<Value> {
@@ -348,6 +377,7 @@ impl App {
                 let title = body.get("title").and_then(Value::as_str).unwrap_or("");
                 self.rename(need("account")?, need("sessionId")?, title)
             }
+            "/api/pins" => self.pin(body, body.get("pinned").and_then(Value::as_bool).unwrap_or(true)),
             "/api/history/resume" => self.resume_history(need("account")?, need("sessionId")?),
             "/api/accounts/add" => {
                 let (acc, created) = accounts::add_account(need("name")?, text("alias"), text("folder"))?;
@@ -359,6 +389,11 @@ impl App {
                 // An empty alias is meaningful here: it clears the default account's alias.
                 let alias = body.get("alias").and_then(Value::as_str);
                 Ok(self.changed(accounts::rename_account(need("name")?, text("newName"), alias)?))
+            }
+            "/api/accounts/color" => {
+                // An empty colour is meaningful here: it goes back to the assigned one.
+                let acc = accounts::set_color(need("name")?, text("color"))?;
+                Ok(json!({ "name": acc.name, "color": acc.color }))
             }
             "/api/accounts/remove" => Ok(self.changed(accounts::remove_account(need("name")?)?)),
             "/api/accounts/restore" => Ok(self.changed(accounts::restore_account(need("name")?, text("alias"))?)),

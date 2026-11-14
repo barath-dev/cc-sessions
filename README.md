@@ -59,18 +59,24 @@ running either way.
 
 ## The page
 
-- **Sessions** — every session in every account in one list: the ones open now first, then
-  saved conversations by when they were last active. The sidebar is a tree of the folders
-  they ran in; pick a folder to see only what is under it, and a dot marks folders with a
-  session open. Filter by account, status or text. Click a row for its prompts, artifacts
-  and details. **Close** stops a session and keeps its conversation; **Resume** reopens a
-  closed one in a new terminal window. A conversation that published artifacts lists them
-  with links to claude.ai; they open for the Claude login that published them.
-- **Rename**, on any session or conversation, gives it a name of your own. The name is
-  kept by cc-sessions and shown in the page and on the command line; Claude Code keeps
-  its own title. Clear the name to go back to that title.
+- **Sessions** — every session in every account in one list: pinned ones first, then the
+  ones open now, then saved conversations by when they were last active (or A–Z). The
+  sidebar is a tree of the folders they ran in; pick a folder to see only what is under
+  it. **Needs you** lists sessions that are blocked or finished and not yet closed, and
+  the browser tab shows how many. Search covers names, folders, artifacts and what you
+  typed in each conversation. Click a session for its details in a panel beside the list:
+  prompts, artifacts and the command that resumes it. **Close** stops a session and keeps
+  its conversation; **Resume** reopens a closed one in a new terminal window. Tick open
+  sessions to close several at once. Artifact links open on claude.ai, for the Claude
+  login that published them.
+- **Rename** a session by double-clicking its name. The name is kept by cc-sessions and
+  shown in the page and on the command line; Claude Code keeps its own title. Clear the
+  name to go back to that title. **Pin** keeps a session or a folder at the top.
+- **Alerts**, in the header, show a desktop notification when a session starts waiting for
+  you or finishes. They need the page open in a browser tab.
 - **Accounts** — login, plan, shortcut and folder of each account. Add, rename, change
-  login, remove and restore.
+  login, remove and restore. The pencil on a card opens one dialog for its name, alias,
+  colour (which marks the account everywhere), login and removal.
 
 The picker in the header switches between **Light**, **Dark** and **Match system**.
 
@@ -86,7 +92,8 @@ a terminal, doing nothing), `Done` (background task finished, not closed), `Clos
   history stay on disk, and **Restore** brings it back.
 - **Close** only stops a session. Its transcript stays and it can be resumed.
 - Renaming an account or its shortcut changes nothing inside the account folder.
-- Renaming a session changes nothing in its transcript. The name is kept in `titles.json`.
+- Renaming or pinning a session changes nothing in its transcript. Names and pins are kept
+  in `titles.json` and `pins.json`.
 - Its own records are rewritten in place with the previous version kept as `<file>.bak`.
 
 The only files it removes are its own launchers: its pid file, a command link it created
@@ -142,11 +149,12 @@ In the settings folder above:
 | File | Purpose |
 |---|---|
 | `config.json` | Answers from setup: command name, port, shortcut, idle limit. |
-| `accounts.json` | Account registry: name, folder, shortcut, removed flag. |
+| `accounts.json` | Account registry: name, folder, shortcut, colour, removed flag. |
 | `aliases.sh` | Generated account shortcuts (macOS, Linux). |
 | `icon.png`, `icon.ico` | Icon of the clickable shortcut (Linux, Windows). |
 | `closed.json` | Sessions closed through the tool. |
 | `titles.json` | Names you gave to sessions. |
+| `pins.json` | Sessions and folders you pinned. |
 | `history-cache.json` | Rebuildable index of saved conversations. |
 | `ui-token` | Access key for the web app (readable only by you). |
 | `ui.pid`, `ui.log` | The running server's pid and its log. |

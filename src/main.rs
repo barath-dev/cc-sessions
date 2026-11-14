@@ -11,6 +11,7 @@ mod cli;
 mod closing;
 mod history;
 mod os;
+mod pins;
 mod proc;
 mod resume;
 mod server;

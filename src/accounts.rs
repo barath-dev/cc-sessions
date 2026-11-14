@@ -25,6 +25,9 @@ pub struct Account {
     pub added_at: Option<String>,
     #[serde(default, rename = "removedAt")]
     pub removed_at: Option<String>,
+    /// Picked in the page, as `#rrggbb`. Without one the page assigns a colour by position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 impl Account {
@@ -134,6 +137,7 @@ pub fn discover(known_aliases: &[(PathBuf, String)]) -> Vec<Account> {
             removed: false,
             added_at: Some(stamp.clone()),
             removed_at: None,
+            color: None,
         });
     }
     for path in dash_folders() {
@@ -152,6 +156,7 @@ pub fn discover(known_aliases: &[(PathBuf, String)]) -> Vec<Account> {
             removed: false,
             added_at: Some(stamp.clone()),
             removed_at: None,
+            color: None,
         });
     }
     accounts
@@ -294,6 +299,7 @@ pub fn add_account(name: &str, alias: Option<&str>, folder: Option<&str>) -> Res
             removed: false,
             added_at: Some(now_iso()),
             removed_at: None,
+            color: None,
         };
         accounts.push(acc.clone());
         save_all(&accounts)?;
@@ -329,6 +335,24 @@ pub fn rename_account(name: &str, new_name: Option<&str>, alias: Option<&str>) -
         }
         accounts[i].name = new_name;
         accounts[i].alias = new_alias;
+        save_all(&accounts)?;
+        Ok(accounts[i].clone())
+    })
+}
+
+/// Give an account a colour of its own (`#rrggbb`), or with `None` or an empty
+/// string go back to the one the page assigns.
+pub fn set_color(name: &str, color: Option<&str>) -> Result<Account> {
+    let color = color.map(|c| c.trim().to_lowercase()).filter(|c| !c.is_empty());
+    if let Some(c) = &color {
+        if c.len() != 7 || !c.starts_with('#') || !c[1..].chars().all(|ch| ch.is_ascii_hexdigit()) {
+            return err("A colour is written as # and six hex digits, like #2f6fd0.");
+        }
+    }
+    store::locked(|| {
+        let mut accounts = load_all()?;
+        let i = find(&accounts, name)?;
+        accounts[i].color = color;
         save_all(&accounts)?;
         Ok(accounts[i].clone())
     })

@@ -14,6 +14,7 @@ use crate::history::Artifact;
 use crate::os;
 use crate::resume;
 use crate::store::{self, state_file};
+use crate::pins::{self, Pins};
 use crate::titles::{self, Titles};
 use crate::util::{iso_to_ms, now_ms, path_str, Error, Result};
 
@@ -38,6 +39,8 @@ pub struct Session {
     pub name: String,
     /// True when `name` was given through this tool.
     pub renamed: bool,
+    /// Pinned to the top of the page through this tool.
+    pub pinned: bool,
     /// The name Claude Code has for it, when `name` is not that.
     #[serde(skip)]
     pub claude_name: Option<String>,
@@ -116,6 +119,7 @@ fn normalise(acc: &Account, raw: &Value) -> Session {
         cwd: text(raw, "cwd").unwrap_or_default(),
         name: text(raw, "name").unwrap_or_else(|| "(unnamed)".into()),
         renamed: false,
+        pinned: false,
         claude_name: None,
         artifacts: Vec::new(),
         started_at,
@@ -237,6 +241,7 @@ fn session_from_ledger(acc: &Account, entry: &Value) -> Session {
         cwd: text(entry, "cwd").unwrap_or_default(),
         name: text(entry, "name").unwrap_or_else(|| "(unnamed)".into()),
         renamed: false,
+        pinned: false,
         claude_name: None,
         artifacts: Vec::new(),
         started_at: entry.get("startedAt").and_then(Value::as_i64),
@@ -300,6 +305,7 @@ pub fn all_sessions(accounts: &[Account]) -> Result<(Vec<Session>, Notices)> {
     }
 
     let titles = Titles::load()?;
+    let pins = Pins::load()?;
     for sess in &mut sessions {
         sess.key = format!("{}:{}", sess.account, sess.id);
         sess.open = sess.status != "closed";
@@ -307,6 +313,7 @@ pub fn all_sessions(accounts: &[Account]) -> Result<(Vec<Session>, Notices)> {
             sess.claude_name = Some(std::mem::replace(&mut sess.name, given.to_string()));
             sess.renamed = true;
         }
+        sess.pinned = pins.has_session(&sess.account_dir, &sess.session_id);
         if let Some(acc) = accounts.iter().find(|a| a.name == sess.account) {
             sess.resume_command = resume::display_command(acc, &resume::Target::from_session(sess));
         }
@@ -320,7 +327,7 @@ pub fn all_sessions(accounts: &[Account]) -> Result<(Vec<Session>, Notices)> {
 /// Cheap signature of everything a session listing depends on, so a caller
 /// that polls often can skip `claude agents` until something actually changed.
 pub fn fingerprint(accounts: &[Account], sessions: &[Session]) -> Vec<(String, u128, u64)> {
-    let mut paths = vec![state_file("accounts.json"), ledger_file(), titles::titles_file()];
+    let mut paths = vec![state_file("accounts.json"), ledger_file(), titles::titles_file(), pins::pins_file()];
     for acc in accounts {
         let base = Path::new(&acc.dir);
         if let Ok(entries) = fs::read_dir(base.join("sessions")) {

@@ -504,6 +504,61 @@ fn rename_is_kept_outside_account_folders() {
 }
 
 #[test]
+fn pins_and_colours_are_kept_outside_account_folders() {
+    let mut m = Machine::new("pins", 47812);
+    let project = m.account("work").join("projects").join("-work-app");
+    fs::create_dir_all(&project).unwrap();
+    let session_id = "aaaa0003-3333-4444-5555-666677778888";
+    let transcript = [
+        r#"{"type":"user","cwd":"/work/app","timestamp":"2026-11-10T06:20:00.000Z","message":{"role":"user","content":"fix the login bug"}}"#,
+        r#"{"type":"user","message":{"role":"user","content":"now the token refresh"}}"#,
+    ];
+    fs::write(project.join(format!("{session_id}.jsonl")), transcript.join("\n")).unwrap();
+    let mut job = background("aaaa0003", "done", None);
+    job["sessionId"] = json!(session_id);
+    m.agents("work", json!([job]));
+    m.seal();
+
+    assert!(m.run(&["--no-open"]).status.success());
+    let token = m.token();
+    let pin = |body: Value| m.post("/api/pins", &token, "Content-Type: application/json\r\n", &body.to_string()).0;
+    let read = |path: &str| -> Value { serde_json::from_str(&m.get(path, Some(&token), None).1).unwrap() };
+
+    assert_eq!(pin(json!({ "account": "work", "sessionId": session_id, "pinned": true })), 200);
+    assert_eq!(pin(json!({ "folder": "/work/app", "pinned": true })), 200);
+    assert_eq!(pin(json!({ "folder": "/work/other", "pinned": true })), 200);
+    assert_eq!(pin(json!({ "account": "work", "sessionId": "nope", "pinned": true })), 400, "no such session");
+    assert_eq!(pin(json!({ "pinned": true })), 400, "nothing named");
+
+    let state = read("/api/state");
+    assert_eq!(state["pinnedFolders"], json!(["/work/app", "/work/other"]));
+    assert_eq!(state["sessions"][0]["pinned"], true);
+    let item = &read("/api/history")["items"][0];
+    assert_eq!(item["pinned"], true);
+    // The page searches what was typed in the conversation.
+    assert_eq!(item["promptText"], "fix the login bug\nnow the token refresh");
+    assert!(m.state.join("pins.json").exists());
+
+    assert_eq!(pin(json!({ "account": "work", "sessionId": session_id, "pinned": false })), 200);
+    assert_eq!(pin(json!({ "folder": "/work/app", "pinned": false })), 200);
+    let state = read("/api/state");
+    assert_eq!(state["pinnedFolders"], json!(["/work/other"]));
+    assert_eq!(state["sessions"][0]["pinned"], false);
+    assert_eq!(read("/api/history")["items"][0]["pinned"], false);
+
+    // An account's colour lives in the registry, in the tool's own folder.
+    let colour = |body: Value| m.post("/api/accounts/color", &token, "Content-Type: application/json\r\n", &body.to_string()).0;
+    let colour_of = || read("/api/state")["accounts"].as_array().unwrap().iter().find(|a| a["name"] == "work").unwrap()["color"].clone();
+    assert_eq!(colour(json!({ "name": "work", "color": "#AA3366" })), 200);
+    assert_eq!(colour_of(), "#aa3366");
+    assert_eq!(colour(json!({ "name": "work", "color": "red" })), 400, "not a colour");
+    assert_eq!(colour(json!({ "name": "nobody", "color": "#aa3366" })), 400, "no such account");
+    assert_eq!(colour_of(), "#aa3366", "a refused colour changes nothing");
+    assert_eq!(colour(json!({ "name": "work", "color": "" })), 200);
+    assert_eq!(colour_of(), Value::Null);
+}
+
+#[test]
 fn server_guards_and_disconnect() {
     let mut m = Machine::new("server", 47808);
     m.agents("work", json!([background("aaaa0001", "blocked", None)]));
