@@ -11,6 +11,7 @@
   <script src="/app.js" defer></script>
 </head>
 <body>
+  <button type="button" class="skip" id="skip">Skip to sessions</button>
   <header class="bar">
     <h1 class="brand">Claude Sessions</h1>
     <nav class="tabs" aria-label="Views">
@@ -18,7 +19,7 @@
       <button type="button" class="tab" data-tab="accounts">Accounts</button>
     </nav>
     <div class="conn">
-      <button type="button" class="btn btn-quiet" id="alerts" aria-pressed="false">Alerts off</button>
+      <button type="button" class="btn btn-quiet switch" id="alerts" role="switch" aria-checked="false">Alerts</button>
       <select id="theme" class="theme" aria-label="Theme">
         <option value="system">Match system</option>
         <option value="light">Light</option>
@@ -40,7 +41,7 @@
     </div>
   </section>
 
-  <dialog id="dialog" class="dialog"></dialog>
+  <dialog id="dialog" class="dialog" aria-labelledby="dialog-title"></dialog>
   <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>
 </html>

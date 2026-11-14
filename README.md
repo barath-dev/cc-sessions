@@ -62,14 +62,16 @@ running either way.
 - **Sessions** — every session in every account in one list: pinned ones first, then the
   ones open now, then saved conversations by when they were last active (or A–Z). The
   sidebar is a tree of the folders they ran in; pick a folder to see only what is under
-  it. **Needs you** lists sessions that are blocked or finished and not yet closed, and
-  the browser tab shows how many. Search covers names, folders, artifacts and what you
+  it. **Needs you** lists sessions that are blocked, or finished in the last day and not
+  yet closed, and the browser tab shows how many. Search covers names, folders, artifacts and what you
   typed in each conversation. Click a session for its details in a panel beside the list:
   prompts, artifacts and the command that resumes it. **Close** stops a session and keeps
   its conversation; **Resume** reopens a closed one in a new terminal window. Tick open
   sessions to close several at once. Artifact links open on claude.ai, for the Claude
-  login that published them.
-- **Rename** a session by double-clicking its name. The name is kept by cc-sessions and
+  login that published them. Conversations that were opened and never used are hidden,
+  with a link to show them. From the keyboard, **Skip to sessions** is the first stop, the
+  arrow keys move through the list and the folder tree, and Esc closes the details.
+- **Rename** a session with the pencil on its row, or by double-clicking its name. The name is kept by cc-sessions and
   shown in the page and on the command line; Claude Code keeps its own title. Clear the
   name to go back to that title. **Pin** keeps a session or a folder at the top.
 - **Alerts**, in the header, show a desktop notification when a session starts waiting for

@@ -1,7 +1,7 @@
 'use strict';
 
 // One colour per account, in registry order, so an account is recognisable everywhere.
-const ACCOUNT_COLORS = ['#0f9488', '#7c56d8', '#d0661c', '#c2417c', '#2f6fd0', '#4a8f2f', '#b08412', '#5a6b7c'];
+const ACCOUNT_COLORS = ['#0f9488', '#7c56d8', '#d0661c', '#c2417c', '#2f6fd0', '#4a8f2f', '#b08412', '#64768a'];
 const STATUS_LABELS = { working: 'Working', blocked: 'Blocked', idle: 'Idle', done: 'Done', closed: 'Closed' };
 const STATUS_HINTS = {
   working: 'Claude is working',
@@ -26,6 +26,10 @@ const state = {
   folder: '',          // picked in the sidebar: a folder, 'needs', or '' for all of them
   collapsed: new Set(storedList('cc-collapsed')),
   selected: null,      // the entry whose details are shown
+  cursor: null,        // the row Tab reaches in the list; the arrow keys move it
+  treeCursor: null,    // the same for the folder tree
+  showEmpty: false,    // list conversations that were opened and never used
+  sideOpen: false,     // the folders, opened like a menu on a narrow screen
   ticked: new Set(),   // keys of open sessions ticked for closing together
   renaming: null,      // { key, where } while a name is being typed
   sort: store('cc-sort') === 'name' ? 'name' : 'active',
@@ -288,7 +292,7 @@ function showDialog({ title, body = [], confirmLabel = 'Confirm', danger = false
         confirm.disabled = false;
       }
     } },
-      h('h2', {}, title),
+      h('h2', { id: 'dialog-title' }, title),
       body,
       error,
       h('div', { class: 'dialog-actions' },
@@ -439,8 +443,35 @@ function render(force) {
   document.title = `${waiting ? `(${waiting}) ` : ''}Claude Sessions`;
   if (state.renaming && !force) return;
   if (!$('#list')) return mount();
+  const mark = focusMark();
   if (state.tab === 'sessions') renderSessions();
   else renderAccounts();
+  focusRestore(mark);
+}
+
+const FOCUSABLE = 'button, input, select, [tabindex]';
+
+// The control that has focus, described so the same one can be found after the
+// list is redrawn: the keyed row or sidebar entry it is in (or else the nearest
+// container with an id), its label, and its place there.
+function focusMark() {
+  const el = document.activeElement;
+  if (!el || el === document.body || !$('#view').contains(el)) return null;
+  const holder = el.closest('[data-key]');
+  const scope = holder || el.parentElement.closest('[id]');
+  if (!scope) return null;
+  return { key: holder && holder.dataset.key, id: holder ? null : scope.id, label: el.getAttribute('aria-label') || el.textContent,
+    index: [...scope.querySelectorAll(FOCUSABLE)].indexOf(el) };
+}
+
+// Put focus back where it was, if the redraw took it away.
+function focusRestore(mark) {
+  if (!mark || (document.activeElement && document.activeElement !== document.body)) return;
+  const scope = mark.key ? document.querySelector(`[data-key="${CSS.escape(mark.key)}"]`) : document.getElementById(mark.id);
+  if (!scope) return;
+  const controls = [...scope.querySelectorAll(FOCUSABLE)];
+  const same = controls.find((c) => (c.getAttribute('aria-label') || c.textContent) === mark.label) || controls[mark.index];
+  if (same) same.focus({ preventScroll: true });
 }
 
 function toolbar() {
@@ -456,7 +487,7 @@ function toolbar() {
     } },
       h('option', { value: 'active', selected: state.sort === 'active' }, 'Sort: last active'),
       h('option', { value: 'name', selected: state.sort === 'name' }, 'Sort: name')),
-    h('button', { type: 'button', class: 'btn', onclick: () => { loadHistory(); refresh(); } }, 'Refresh'));
+  );
 }
 
 function artifactList(artifacts) {
@@ -507,10 +538,14 @@ function entry(s, item) {
   };
 }
 
-// Waiting for its person: stuck on a question, or finished and not yet closed.
-// Works on a session and on an entry alike.
+// Waiting for its person: stuck on a question, or finished in the last day and
+// not yet closed. One finished long ago is not news; it stays under "Done, not
+// closed". Works on a session and on an entry alike.
+const FRESH_MS = 24 * 60 * 60 * 1000;
 function needsYou(x) {
-  return x.open && (x.status === 'blocked' || x.status === 'done');
+  if (!x.open) return false;
+  if (x.status === 'blocked') return true;
+  return x.status === 'done' && Date.now() - (x.at || x.updatedAt || 0) < FRESH_MS;
 }
 
 // A folder's place in the sidebar: its path with one kind of slash. '?' is no folder.
@@ -573,13 +608,23 @@ function pinnedFolderIds() {
   return (state.data.pinnedFolders || []).map(folderId).filter((id) => id !== '?');
 }
 
+// The folder that takes Tab into the tree; the arrow keys move from there.
+let treeCursor = '';
+
 function renderSide(entries, tree) {
   const rows = [];
-  const walk = (node, depth) => {
-    rows.push(sideRow(node, depth, 'folder'));
-    if (!state.collapsed.has(node.id)) for (const kid of node.kids) walk(kid, depth + 1);
+  const visible = [];
+  const walk = (node, depth, parent) => {
+    visible.push(node.id);
+    rows.push(sideRow(node, depth, 'folder', parent));
+    if (!state.collapsed.has(node.id)) for (const kid of node.kids) walk(kid, depth + 1, node.id);
   };
-  for (const node of tree) walk(node, 0);
+  // The cursor is decided before the rows are made, so exactly one of them can be reached with Tab.
+  const order = [];
+  const list = (node) => { order.push(node.id); if (!state.collapsed.has(node.id)) node.kids.forEach(list); };
+  tree.forEach(list);
+  treeCursor = [state.treeCursor, state.folder].find((id) => order.includes(id)) ?? order[0] ?? '';
+  for (const node of tree) walk(node, 0, '');
   // Every folder that has folders inside it; one button closes or opens them all.
   const parents = [];
   const collect = (node) => {
@@ -588,47 +633,109 @@ function renderSide(entries, tree) {
   };
   tree.forEach(collect);
   const allClosed = parents.every((id) => state.collapsed.has(id));
-  const pinned = pinnedFolderIds().map((id) => (
-    { id, label: id.slice(id.lastIndexOf('/') + 1), kids: [], all: entries.filter((e) => inFolder(e, id)) }));
-  $('#side').replaceChildren(...[
+  const pinnedIds = pinnedFolderIds();
+  const pinned = pinnedIds.map((id) => (
+    { id, label: shortName(id, pinnedIds), kids: [], all: entries.filter((e) => inFolder(e, id)) }));
+  const place = state.folder === 'needs' ? 'Needs you' : state.folder ? folderPath(state.folder) : 'All sessions';
+  $('#side').classList.toggle('is-open', state.sideOpen);
+  $('#side').replaceChildren(
+    h('button', { type: 'button', class: 'side-toggle', 'aria-expanded': String(state.sideOpen), onclick: () => {
+      state.sideOpen = !state.sideOpen;
+      render();
+    } }, h('span', { class: 'side-toggle-label' }, 'Folders'), h('span', { class: 'side-toggle-place' }, place)),
+    h('div', { class: 'side-body' }, ...[
     sideRow({ id: '', label: 'All sessions', kids: [], all: entries }, 0, 'view'),
-    sideRow({ id: 'needs', label: 'Needs you', kids: [], all: entries.filter(needsYou) }, 0, 'view'),
+    sideRow({ id: 'needs', label: 'Needs you', kids: [], all: entries.filter(needsYou),
+      hint: 'Blocked, or finished in the last day and not closed yet' }, 0, 'view'),
     pinned.length > 0 && h('div', { class: 'side-head' }, h('h2', { class: 'side-heading' }, 'Pinned')),
     ...pinned.map((node) => sideRow(node, 0, 'pin')),
     h('div', { class: 'side-head' },
-      h('h2', { class: 'side-heading' }, 'Folders'),
+      h('h2', { class: 'side-heading', id: 'folders-heading' }, 'Folders'),
       parents.length > 0 && h('button', { type: 'button', class: 'side-all', onclick: () => {
         state.collapsed = new Set(allClosed ? [] : parents);
         store('cc-collapsed', JSON.stringify(parents.filter((id) => state.collapsed.has(id))));
         render();
       } }, allClosed ? 'Expand all' : 'Collapse all')),
-    ...rows,
-  ].filter(Boolean));
+    rows.length > 0 && h('div', { role: 'tree', 'aria-labelledby': 'folders-heading', class: 'side-tree' }, rows),
+  ].filter(Boolean)));
+}
+
+// A folder's last name, with as many of the names above it as it takes to tell it from the others.
+function shortName(id, all) {
+  const parts = (id) => folderPath(id).split('/');
+  const mine = parts(id);
+  for (let n = 1; n < mine.length; n++) {
+    const name = mine.slice(-n).join('/');
+    if (all.every((other) => other === id || parts(other).slice(-n).join('/') !== name)) return name;
+  }
+  return mine.join('/');
+}
+
+function toggleFolder(id) {
+  if (state.collapsed.has(id)) state.collapsed.delete(id);
+  else state.collapsed.add(id);
+  store('cc-collapsed', JSON.stringify([...state.collapsed]));
+  render();
+}
+
+// Up and Down move through the folders shown, Right opens a folder or steps
+// into it, Left closes it or steps out to the folder it is in. Enter picks it.
+function treeKey(event, node, parent) {
+  const items = [...document.querySelectorAll('#side [role=treeitem]')];
+  const at = items.indexOf(event.currentTarget);
+  const open = node.kids.length > 0 && !state.collapsed.has(node.id);
+  const moveTo = (item) => {
+    if (!item) return;
+    for (const other of items) other.tabIndex = -1;
+    item.tabIndex = 0;
+    item.focus();
+    state.treeCursor = item.dataset.id;
+  };
+  const toggle = () => { state.treeCursor = node.id; toggleFolder(node.id); };
+  switch (event.key) {
+    case 'ArrowDown': moveTo(items[at + 1]); break;
+    case 'ArrowUp': moveTo(items[at - 1]); break;
+    case 'Home': moveTo(items[0]); break;
+    case 'End': moveTo(items[items.length - 1]); break;
+    case 'ArrowRight': if (open) moveTo(items[at + 1]); else if (node.kids.length) toggle(); break;
+    case 'ArrowLeft': if (open) toggle(); else moveTo(items.find((item) => item.dataset.id === parent)); break;
+    default: return;
+  }
+  event.preventDefault();
 }
 
 // `kind` is 'view' for the lists at the top, 'pin' for a pinned folder, 'folder' for one in the tree.
-function sideRow(node, depth, kind) {
+function sideRow(node, depth, kind, parent = '') {
   const open = node.all.filter((e) => e.open);
   // The dot takes the colour of the most pressing open session in the folder.
   const pressing = ['blocked', 'working'].find((status) => open.some((e) => e.status === status)) || 'idle';
   const collapsed = state.collapsed.has(node.id);
   const selected = state.folder === node.id;
+  // A pinned folder that is picked is filled in under Pinned; in the tree it is only marked.
+  const shown = !selected ? '' : kind === 'folder' && pinnedFolderIds().includes(node.id) ? ' is-current' : ' is-selected';
   const needs = node.id === 'needs';
-  return h('div', { class: `side-row${selected ? ' is-selected' : ''}`, style: { '--depth': String(depth) } },
-    kind === 'folder' && node.kids.length
-      ? h('button', { type: 'button', class: 'side-twist', 'aria-expanded': String(!collapsed),
-        'aria-label': `${collapsed ? 'Show' : 'Hide'} the folders in ${node.label}`, onclick: () => {
-          if (collapsed) state.collapsed.delete(node.id);
-          else state.collapsed.add(node.id);
-          store('cc-collapsed', JSON.stringify([...state.collapsed]));
-          render();
-        } })
-      : h('span', { class: 'side-twist' }),
-    h('button', { type: 'button', class: 'side-item', 'aria-current': selected ? 'true' : null,
-      title: kind === 'view' ? null : folderPath(node.id) || null, onclick: () => go({ folder: node.id }) },
-      kind !== 'view' && h('span', { class: 'side-icon' }),
+  const inTree = kind === 'folder';
+  const blocked = open.filter((e) => e.status === 'blocked').length;
+  const openText = !open.length ? '' : `${open.length} open${blocked ? `, ${blocked} waiting for you` : ''}`;
+  return h('div', { class: `side-row${shown}`, 'data-key': `side:${kind}:${node.id}`,
+    role: inTree ? 'none' : null, style: { '--depth': String(depth) } },
+    // The arrow is for the mouse; the keyboard opens and closes folders with Right and Left.
+    inTree && node.kids.length
+      ? h('button', { type: 'button', class: 'side-twist', 'aria-expanded': String(!collapsed), 'aria-hidden': 'true', tabIndex: -1,
+        onclick: () => toggleFolder(node.id) })
+      : h('span', { class: 'side-twist', 'aria-hidden': 'true' }),
+    h('button', { type: 'button', class: 'side-item', 'data-id': node.id,
+      ...(inTree
+        ? { role: 'treeitem', 'aria-level': String(depth + 1), 'aria-selected': String(selected), tabIndex: node.id === treeCursor ? 0 : -1,
+          'aria-expanded': node.kids.length ? String(!collapsed) : null, onkeydown: (event) => treeKey(event, node, parent),
+          onfocus: () => { state.treeCursor = node.id; } }
+        : { 'aria-current': selected ? 'true' : null }),
+      'aria-label': `${node.label}, ${plural(node.all.length, 'session')}${openText ? `, ${openText}` : ''}`,
+      title: kind === 'view' ? node.hint || null : folderPath(node.id) || null,
+      onclick: () => { if (inTree) state.treeCursor = node.id; state.sideOpen = false; go({ folder: node.id }); } },
+      kind !== 'view' && h('span', { class: 'side-icon', 'aria-hidden': 'true' }),
       h('span', { class: 'side-name' }, node.label),
-      !needs && open.length > 0 && h('span', { class: 'side-open', 'data-status': pressing, title: `${open.length} open` }),
+      !needs && open.length > 0 && h('span', { class: 'side-open', 'data-status': pressing, title: openText }),
       h('span', { class: `side-count${needs && node.all.length ? ' is-hot' : ''}` }, String(node.all.length))));
 }
 
@@ -661,7 +768,10 @@ function searchHit(e, needle) {
 function renderSessions() {
   const filters = state.filters;
   const everything = allEntries();
-  const all = everything.filter((e) => !filters.account || e.account === filters.account);
+  const forAccount = everything.filter((e) => !filters.account || e.account === filters.account);
+  // Opened and never used: no session, no prompts. Only shown when asked for.
+  const empties = forAccount.filter(isEmpty);
+  const all = state.showEmpty ? forAccount : forAccount.filter((e) => !isEmpty(e));
   const tree = folderTree(all);
   const needs = state.folder === 'needs';
   const folder = needs ? '' : state.folder;
@@ -747,10 +857,28 @@ function renderSessions() {
   const reading = !state.history && !state.historyError;
   const shown = visible.filter((e) => inFilter(e, filters.status));
   if (!shown.length) {
-    $('#list').replaceChildren(h('p', { class: 'empty' }, reading ? 'Reading saved conversations…'
-      : needs && !scope.length ? 'Nothing is waiting for you.'
-        : all.length ? 'No sessions match these filters.'
-          : 'No sessions yet. Start Claude Code in any folder and it shows up here.'));
+    const status = filters.status === 'open' ? 'Open' : STATUS_LABELS[filters.status];
+    const active = [
+      filters.q.trim() && `the search “${filters.q.trim()}”`,
+      filters.account && `the account ${filters.account}`,
+      filters.status !== 'all' && `${status} sessions`,
+    ].filter(Boolean);
+    const place = needs ? 'Needs you' : folder ? folderPath(folder) : '';
+    const clear = () => {
+      Object.assign(filters, { q: '', account: '', status: 'all' });
+      const search = $('.search');
+      if (search) search.value = '';
+      render();
+    };
+    const message = reading ? 'Reading saved conversations…'
+      : !all.length ? 'No sessions yet. Start Claude Code in any folder and it shows up here.'
+        : needs && !scope.length ? 'Nothing is waiting for you.'
+          : `Nothing matches ${active.length ? active.join(', ') : 'here'}${place ? ` in ${place}` : ''}.`;
+    $('#list').replaceChildren(h('div', { class: 'empty' },
+      h('p', {}, message),
+      !reading && all.length > 0 && (active.length > 0 || place) && h('div', { class: 'empty-actions' },
+        active.length > 0 && h('button', { type: 'button', class: 'btn', onclick: clear }, 'Clear filters'),
+        place && h('button', { type: 'button', class: 'btn', onclick: () => go({ folder: '' }) }, 'Look in all folders'))));
     return;
   }
 
@@ -758,8 +886,11 @@ function renderSessions() {
   // sessions, then the rest by when it was last active.
   const rank = (e) => (e.pinned ? 0 : !e.open ? 3 : e.status === 'done' ? 2 : 1);
   const heading = (e) => ['Pinned', 'Open now', 'Done, not closed'][rank(e)] || dateGroup(e.at);
+  const byName = (list) => [...list].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+  const pinnedShown = shown.filter((e) => e.pinned);
   const groups = state.sort === 'name'
-    ? [['', [...shown].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))]]
+    ? [['Pinned', byName(pinnedShown)], [pinnedShown.length ? 'A–Z' : '', byName(shown.filter((e) => !e.pinned))]]
+      .filter(([, list]) => list.length)
     : groupBy([0, 1, 2, 3].flatMap((n) => shown.filter((e) => rank(e) === n)), heading);
   // Rows name their folder only when the list spans several, and then from the picked folder down.
   const several = new Set(scope.map((e) => e.folder)).size > 1;
@@ -769,6 +900,10 @@ function renderSessions() {
   };
   const days = [...new Set(accounts.map((a) => a.retentionDays))].sort((a, b) => a - b);
   const span = days.length > 1 ? `${days[0]} to ${days[days.length - 1]}` : `${days[0] || 30}`;
+  const ordered = groups.flatMap(([, entries]) => entries).map((e) => e.key);
+  rowCursor = [state.cursor, state.selected].find((key) => ordered.includes(key)) ?? ordered[0];
+  const hiddenEmpty = state.showEmpty ? 0 : empties.filter((e) => needs ? false : inFolder(e, folder)).length;
+  const shownEmpty = state.showEmpty ? scope.filter(isEmpty).length : 0;
   $('#list').replaceChildren(
     ...groups.map(([name, entries]) => {
       const finished = name === 'Done, not closed' ? entries.map((e) => e.session) : [];
@@ -785,9 +920,33 @@ function renderSessions() {
             : h('span', { class: 'count' }, String(entries.length))),
         entries.map((e) => entryRow(e, folderOf(e), hits.get(e.key))));
     }),
+    (hiddenEmpty > 0 || shownEmpty > 0) && h('p', { class: 'list-more' },
+      h('button', { type: 'button', class: 'btn-link', onclick: () => { state.showEmpty = !state.showEmpty; render(); } },
+        state.showEmpty ? 'Hide empty conversations' : `Show ${plural(hiddenEmpty, 'empty conversation')}`),
+      h('span', { class: 'quiet' }, ' Opened and never used: no prompts.')),
     h('p', { class: 'quiet list-note' }, reading ? 'Reading saved conversations…'
       : `Claude Code itself deletes conversations after ${span} days without activity ` +
         '(its cleanupPeriodDays setting, shown per account under Accounts). Claude Sessions never deletes any.'));
+}
+
+function isEmpty(e) {
+  return !e.session && e.item && e.item.prompts === 0;
+}
+
+// The row Tab reaches in the list. Set while the list is drawn.
+let rowCursor = null;
+
+// Up and Down move to the next row, Home and End to the first and last.
+function rowKey(event) {
+  const rows = [...document.querySelectorAll('#list .row')];
+  const at = rows.indexOf(event.currentTarget.closest('.row'));
+  const to = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: rows.length - 1 }[event.key];
+  if (to === undefined || !rows[to]) return false;
+  event.preventDefault();
+  for (const row of rows) for (const control of row.querySelectorAll(FOCUSABLE)) control.tabIndex = row === rows[to] ? 0 : -1;
+  state.cursor = rows[to].dataset.key;
+  rows[to].querySelector('.row-main').focus();
+  return true;
 }
 
 // Pick the session whose details are shown, or none. Beside the list only the
@@ -817,23 +976,26 @@ function entryRow(e, folder, hit) {
     item && h('span', { class: 'row-tag' }, plural(item.prompts, 'prompt')),
     e.artifacts.length > 0 && h('span', { class: 'row-tag' }, plural(e.artifacts.length, 'artifact')),
   ].filter(Boolean);
-  return h('div', { class: `row${e.open ? '' : ' is-closed'}${selected ? ' is-selected' : ''}`, 'data-key': e.key,
+  const row = h('div', { class: `row${e.open ? '' : ' is-closed'}${selected ? ' is-selected' : ''}`, 'data-key': e.key,
     style: { '--acct': accountColor(e.account) } },
-    h('span', { class: 'row-tick' }, e.open && h('input', { type: 'checkbox', checked: state.ticked.has(s.key),
+    h('label', { class: 'row-tick' }, e.open && h('input', { type: 'checkbox', checked: state.ticked.has(s.key),
       'aria-label': `Select ${e.name}`, onchange: (event) => {
         if (event.target.checked) state.ticked.add(s.key);
         else state.ticked.delete(s.key);
         render();
       } })),
     h('div', { class: 'row-main', role: 'button', tabIndex: 0, 'aria-expanded': String(selected),
+      onfocus: () => { state.cursor = e.key; },
       onclick: (event) => {
         // The second click of a double-click is the start of a rename, not another pick.
         if (event.detail > 1) return;
         select(selected && !wide.matches ? null : e.key);
       },
       onkeydown: (event) => {
-        if (event.target !== event.currentTarget || (event.key !== 'Enter' && event.key !== ' ')) return;
+        if (event.target !== event.currentTarget || rowKey(event)) return;
+        if (event.key !== 'Enter' && event.key !== ' ') return;
         event.preventDefault();
+        state.cursor = e.key;
         select(selected ? null : e.key);
       } },
       h('span', { class: 'row-title' },
@@ -844,11 +1006,16 @@ function entryRow(e, folder, hit) {
       statusEl(e),
       h('span', { class: 'row-time', title: fullDate(e.at) }, recentDate(e.at))),
     h('div', { class: 'row-actions' },
+      // Rename sits with the other actions, and stays on every row of a narrow screen, where touch cannot double-click.
+      e.sessionId && h('button', { type: 'button', class: 'icon-btn', 'aria-label': `Rename ${e.name}`,
+        title: 'Rename (or double-click the name)', onclick: () => startRename(e, 'row') }, icon('edit')),
       e.command && h('button', { type: 'button', class: 'btn btn-small row-quiet', title: 'Copy the command that resumes it',
-        onclick: (event) => copyText(e.command, event.currentTarget) }, 'Copy'),
+        onclick: (event) => copyText(e.command, event.currentTarget) }, 'Copy command'),
       pinButton(e, 'row-quiet'),
       mainAction(e)),
     selected && !wide.matches && entryDetails(e, 'row'));
+  if (e.key !== rowCursor) for (const control of row.querySelectorAll(FOCUSABLE)) control.tabIndex = -1;
+  return row;
 }
 
 // Close for a session that is open, Resume for one that is not.
@@ -1081,8 +1248,7 @@ function showAlerts() {
     button.hidden = true;
     return;
   }
-  button.setAttribute('aria-pressed', String(alertsOn()));
-  button.textContent = alertsOn() ? 'Alerts on' : 'Alerts off';
+  button.setAttribute('aria-checked', String(alertsOn()));
   button.title = alertsOn()
     ? 'A notification appears when a session is waiting for you or finishes, while this page is open in a tab.'
     : 'Get a notification when a session is waiting for you or finishes.';
@@ -1105,27 +1271,32 @@ async function toggleAlerts() {
   showAlerts();
 }
 
-// Compare the sessions before and after a refresh and tell about each one that
-// has just started waiting. Nothing is said on the first load.
+// Compare the sessions before and after a refresh and tell about the ones that
+// have just started waiting, all at once. Nothing is said on the first load.
 function noticeChanges(before, after) {
   if (!before) return;
   const was = new Map(before.map((s) => [s.key, s.status]));
-  for (const s of after) {
-    const old = was.get(s.key);
-    if (!old || old === s.status || !needsYou(s)) continue;
-    const what = s.status === 'blocked' ? `${s.name} is waiting for you` : `${s.name} has finished`;
-    const key = s.sessionId ? `${s.account}|${s.sessionId}` : `s:${s.key}`;
-    if (!document.hidden) {
-      toast(`${what}.`);
-    } else if (alertsOn()) {
-      const note = new Notification(what, { body: `${s.cwd} · ${s.account}`, tag: s.key });
-      note.onclick = () => {
-        window.focus();
-        note.close();
-        go({ tab: 'sessions' });
-        select(key);
-      };
-    }
+  const fresh = after.filter((s) => { const old = was.get(s.key); return old && old !== s.status && needsYou(s); });
+  if (!fresh.length) return;
+  const waiting = fresh.filter((s) => s.status === 'blocked').length;
+  const finished = fresh.length - waiting;
+  const one = fresh.length === 1 ? fresh[0] : null;
+  const what = one
+    ? (one.status === 'blocked' ? `${one.name} is waiting for you` : `${one.name} has finished`)
+    : [waiting && `${waiting} waiting for you`, finished && `${finished} finished`].filter(Boolean).join(', ');
+  if (!document.hidden) {
+    toast(one ? `${what}.` : `${plural(fresh.length, 'session')} need you: ${what}.`);
+  } else if (alertsOn()) {
+    const note = one
+      ? new Notification(what, { body: `${one.cwd} · ${one.account}`, tag: one.key })
+      : new Notification(`${plural(fresh.length, 'session')} need you`, { body: what, tag: 'cc-sessions-batch' });
+    note.onclick = () => {
+      window.focus();
+      note.close();
+      if (!one) return go({ tab: 'sessions', folder: 'needs' });
+      go({ tab: 'sessions' });
+      select(one.sessionId ? `${one.account}|${one.sessionId}` : `s:${one.key}`);
+    };
   }
 }
 
@@ -1328,6 +1499,12 @@ for (const button of document.querySelectorAll('.tab')) {
 }
 $('#disconnect').addEventListener('click', disconnect);
 $('#alerts').addEventListener('click', toggleAlerts);
+// Straight to the list's current row (or the first control in the view), past the header and sidebar.
+$('#skip').addEventListener('click', () => {
+  if (state.tab !== 'sessions') go({ tab: 'sessions' });
+  const target = $('#list .row-main[tabindex="0"]') || $('#list').querySelector(FOCUSABLE);
+  if (target) target.focus();
+});
 showAlerts();
 
 // The view is in the address (#accounts, #needs, #f=<folder>), so Back steps through it.
@@ -1366,15 +1543,16 @@ show();
 if (!token) setOffline('token');
 refresh();
 
-// A hidden page keeps an eye out every third time when alerts are on, and rests otherwise.
+// A hidden page checks every third time, so the count in its tab title and the alerts stay current.
 let ticks = 0;
-setInterval(() => { if (!document.hidden || (alertsOn() && ++ticks % 3 === 0)) refresh(); }, POLL_MS);
+setInterval(() => { if (!document.hidden || ++ticks % 3 === 0) refresh(); }, POLL_MS);
 // The server stops itself when no page has been open for a while. A hidden tab
 // is still an open page, so it checks in now and then without fetching anything.
 setInterval(() => { if (document.hidden && !state.offline) api('/api/ping').catch(() => {}); }, 5 * 60 * 1000);
+// Saved conversations are read again often enough that new ones turn up without a Refresh button.
 setInterval(() => {
   if (!document.hidden && !state.offline && state.tab === 'sessions' && state.history) loadHistory();
-}, 60000);
+}, 20000);
 // Relative times drift even when nothing changes; redraw them once a minute.
 setInterval(() => { if (!document.hidden && !$('#dialog').open) render(); }, 60000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
