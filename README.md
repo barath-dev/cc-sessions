@@ -13,7 +13,7 @@ It is an unofficial tool and is not affiliated with Anthropic.
 
 ## See it
 
-[![The Sessions view, with sessions from three accounts grouped by folder](docs/demo.png)](docs/demo.mp4)
+[![The Sessions view: a folder tree, sessions from three accounts in one list, and the details of the picked session beside it](docs/demo.png)](docs/demo.mp4)
 
 A one-minute narrated tour of the page: [docs/demo.mp4](docs/demo.mp4). It uses made-up demo data.
 

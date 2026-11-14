@@ -8,6 +8,9 @@ cargo build --release
 node docs/record-demo/record.mjs
 ```
 
+For the screenshot alone, add `--still`: it skips the narration and the recording, so
+it needs neither the voice nor ffmpeg.
+
 It needs Node 22 or later, Google Chrome, and ffmpeg with ffprobe (and libx264). Set
 `CHROME`, `FFMPEG` or `FFPROBE` if they are not in the usual place. It was written on macOS.
 

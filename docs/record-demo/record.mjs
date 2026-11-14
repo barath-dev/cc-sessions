@@ -39,6 +39,8 @@ const FFMPEG = process.env.FFMPEG || 'ffmpeg';
 const FFPROBE = process.env.FFPROBE || 'ffprobe';
 const SAY = process.env.SAY || 'say';
 const KEEP = process.argv.includes('--keep');
+// Only docs/demo.png: no narration, no recording.
+const STILL_ONLY = process.argv.includes('--still');
 
 // Short on purpose: the resume command in a session's details prints this path.
 const HOME = '/tmp/alex';
@@ -50,6 +52,8 @@ const PORT = 47999;
 // The page is laid out at 1280x800 and drawn at twice that, then scaled to the
 // video size, which keeps small text sharp.
 const VIEW = { width: 1280, height: 800 };
+// The still is wider than the video, so a session's details fit in the panel beside the list.
+const STILL = { width: 1600, height: 1000, scale: 1.125 };
 const SCALE = 2;
 const VIDEO = { width: 1600, height: 1000, fps: 30, crf: 20 };
 
@@ -853,7 +857,7 @@ async function main() {
   let page;
   try {
     // Spoken first: the stand-in sessions made next only live for two minutes.
-    const clips = speak(path.join(work, 'narration'));
+    const clips = STILL_ONLY ? null : speak(path.join(work, 'narration'));
     // A server left over from an earlier run would hold the port and the old data.
     if (existsSync(MARKER)) stopTool();
     resetHome();
@@ -867,20 +871,32 @@ async function main() {
     await page.send('Page.addScriptToEvaluateOnNewDocument', {
       source: `try { localStorage.setItem('cc-tab', 'sessions'); localStorage.setItem('cc-theme', 'light'); } catch {}`,
     });
-    const metrics = (scale) => page.send('Emulation.setDeviceMetricsOverride', { ...VIEW, deviceScaleFactor: scale, mobile: false });
-    // Drawn at exactly the still's size, so it needs no scaling. Reduced motion stops the Working dots mid-pulse.
-    await metrics(VIDEO.width / VIEW.width);
-    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-    await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?t=${token}` });
+    const metrics = (view, scale) => page.send('Emulation.setDeviceMetricsOverride',
+      { width: view.width, height: view.height, deviceScaleFactor: scale, mobile: false });
+    const open = async () => {
+      await page.send('Page.navigate', { url: `http://127.0.0.1:${PORT}/?t=${token}` });
+      // Loaded once the saved conversations are in: until then the list says it is reading them.
+      await a.waitFor(`document.querySelectorAll('.row').length > 0 && document.querySelector('#conn-state').dataset.state === 'online'
+        && document.querySelector('.list-note') && !document.querySelector('.list-note').textContent.startsWith('Reading')`, 'the sessions list');
+    };
     const a = actor(page);
-    await a.waitFor(`document.querySelectorAll('.row').length > 0 && document.querySelector('#conn-state').dataset.state === 'online'`, 'the sessions list');
+
+    // The still: every session, with one picked so its details show. Reduced motion stops the Working dots mid-pulse.
+    await metrics(STILL, STILL.scale);
+    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+    await open();
+    await page.evaluate(`[...document.querySelectorAll('#list .row')]
+      .find((row) => row.querySelector('.row-name').textContent === ${JSON.stringify(LOOK_AT)}).querySelector('.row-main').click()`);
+    await a.waitFor(`!document.querySelector('#panel').hidden`, 'the details panel');
     await sleep(500);
     const still = await page.send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(path.join(docs, 'demo.png'), Buffer.from(still.data, 'base64'));
     log('Wrote docs/demo.png');
+    if (STILL_ONLY) return;
 
     await page.send('Emulation.setEmulatedMedia', { features: [] });
-    await metrics(SCALE);
+    await metrics(VIEW, SCALE);
+    await open();
     await a.start();
     await sleep(400);
     const time = timekeeper(clips);
