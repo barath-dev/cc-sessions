@@ -80,6 +80,8 @@ function tokens(n) {
   return String(n);
 }
 
+const perPromptText = (n) => (n ? tokens(Math.round(n)) : '');
+
 function toast(message, kind = 'ok') {
   // An error is remembered for a problem report, and offers to report it.
   const report = kind === 'error' && window.ccReport;
@@ -122,6 +124,8 @@ const SORTS = {
   active: { label: 'Last active', dir: 'desc', session: (a, b) => a.at - b.at, folder: (a, b) => latest(a.node) - latest(b.node) },
   prompts: { label: 'Prompts', dir: 'desc', blank: (e) => !e.item, session: (a, b) => promptsOf(a) - promptsOf(b), folder: (a, b) => folderPrompts(a.node) - folderPrompts(b.node) },
   tokens: { label: 'Tokens', dir: 'desc', blank: (e) => !e.tokens, session: (a, b) => metricOf(a.tokens) - metricOf(b.tokens), folder: (a, b) => folderTokens(a.node) - folderTokens(b.node) },
+  // A session going round in circles uses a lot for each thing asked: sort by this to find it.
+  perPrompt: { label: 'Per prompt', hint: 'Tokens for each prompt typed. A session going round in circles uses many', dir: 'desc', blank: (e) => !perPromptOf(e), session: (a, b) => perPromptOf(a) - perPromptOf(b), folder: (a, b) => folderPerPrompt(a.node) - folderPerPrompt(b.node) },
 };
 
 
@@ -312,6 +316,9 @@ const STATUS_ORDER = ['blocked', 'working', 'idle', 'done', 'closed'];
 const promptsOf = (e) => (e.item ? e.item.prompts : 0);
 const folderPrompts = (node) => node.all.reduce((sum, e) => sum + promptsOf(e), 0);
 const folderTokens = (node) => node.all.reduce((sum, e) => sum + metricOf(e.tokens), 0);
+// Tokens (in the chosen measure) for each prompt typed; 0 when there is nothing to divide.
+const perPromptOf = (e) => (e.tokens && promptsOf(e) ? metricOf(e.tokens) / promptsOf(e) : 0);
+const folderPerPrompt = (node) => (folderPrompts(node) ? folderTokens(node) / folderPrompts(node) : 0);
 const sortOrder = () => (S.sortDir || SORTS[S.sort].dir) === 'asc' ? 1 : -1;
 function sorter(kind) {
   const { session, folder, blank } = SORTS[S.sort];
@@ -554,7 +561,7 @@ function listView(items) {
     const asc = sortOrder() === 1;
     return h('th', { class: cls, 'aria-sort': current ? (asc ? 'ascending' : 'descending') : null },
       h('button', { type: 'button', class: current ? `is-sorted${asc ? ' is-asc' : ''}` : null,
-        title: current ? `Sorted by ${SORTS[key].label.toLowerCase()}; click to reverse` : `Sort by ${SORTS[key].label.toLowerCase()}`,
+        title: `${SORTS[key].hint ? `${SORTS[key].hint}. ` : ''}${current ? 'Click to reverse the order' : `Sort by ${SORTS[key].label.toLowerCase()}`}`,
         onclick: () => setSort(key, current ? (asc ? 'desc' : 'asc') : null) }, SORTS[key].label));
   };
   const body = h('tbody');
@@ -573,7 +580,8 @@ function listView(items) {
       h('td', { class: 'muted' }, folder ? '' : item.account),
       h('td', { class: 'muted', title: fullDate(folder ? latest(item.node) : item.at) }, ago(folder ? latest(item.node) : item.at)),
       h('td', { class: 'muted' }, folder || !item.item ? '' : String(item.item.prompts)),
-      h('td', { class: 'muted num' }, folder ? tokens(item.node.all.reduce((sum, e) => sum + metricOf(e.tokens), 0)) : item.tokens ? tokens(metricOf(item.tokens)) : '')));
+      h('td', { class: 'muted num' }, folder ? tokens(item.node.all.reduce((sum, e) => sum + metricOf(e.tokens), 0)) : item.tokens ? tokens(metricOf(item.tokens)) : ''),
+      h('td', { class: 'muted num' }, perPromptText(folder ? folderPerPrompt(item.node) : perPromptOf(item)))));
     if (expanded) {
       for (const child of itemsIn({ kind: 'folder', id: item.node.id }, { search: '' })) add(child, depth + 1);
     }
@@ -581,7 +589,7 @@ function listView(items) {
   for (const item of items) add(item, 0);
   return h('table', { class: 'list' },
     h('thead', {}, h('tr', {},
-      header('name'), header('status'), header('account'), header('active'), header('prompts'), header('tokens', 'num'))),
+      header('name'), header('status'), header('account'), header('active'), header('prompts'), header('tokens', 'num'), header('perPrompt', 'num'))),
     body);
 }
 
@@ -669,6 +677,7 @@ function sessionFacts(e) {
       ['Account', account.email ? `${e.account} (${account.email})` : e.account],
       ['Started', fullDate((s && s.startedAt) || (item && item.startedAt))],
       ['Last status', s && s.detail],
+      ['Per prompt', perPromptOf(e) ? `${perPromptText(perPromptOf(e))} tokens (${metricLabel().toLowerCase()})` : null],
       ['Tokens', e.tokens && tokenSum(e.tokens) ? `${tokens(tokenSum(e.tokens))}: ${tokens(e.tokens.input)} in, ${tokens(e.tokens.output)} out, ${tokens(e.tokens.cacheWrite)} cache written, ${tokens(e.tokens.cacheRead)} cache read` : null],
       ['Session', e.sessionId],
     ].filter(([, v]) => v).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),

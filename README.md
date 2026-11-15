@@ -117,7 +117,9 @@ files in them, accounts as tags in the sidebar.
 
 - **Icons, List and Columns** views, back and forward, a path bar, and Recents, Needs you
   and Open now in the sidebar. Click a column heading in the List view to sort by it
-  (name, status, account, last active, prompts or tokens); click it again to reverse.
+  (name, status, account, last active, prompts, tokens or tokens per prompt); click it
+  again to reverse. **Per prompt** finds sessions that used a lot for each thing asked,
+  often ones going round in circles on the same problem.
 - **Quick Look** (Space or double-click) shows a session's details and actions; a
   right-click menu has the rest, including **Open in VS Code** (or Cursor, Zed...) for a
   session's folder or a whole folder of sessions.
