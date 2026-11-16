@@ -51,14 +51,17 @@ Run `cc-sessions setup` to change any answer later.
 
 From 2.6.0 on, cc-sessions keeps itself up to date. Once a day the server asks GitHub for
 the latest release. When there is a newer one it downloads the program for your system,
-checks it against the release's SHA-256 list, puts it in place and restarts on it; the
-page reloads and a What's new window lists the changes in every version since yours. Settings and sessions are not touched, and a close in
-progress finishes first.
+checks it against the release's SHA-256 list, puts it in place and restarts on it.
+Settings and sessions are not touched, and a close in progress finishes first.
+
+After an update the page reloads and opens a **What's new** window (from 2.7.2): the
+changes in every version since the one you had, newest first, with a link to all the
+release notes. It shows once per update; **Got it** or Esc closes it.
 
 - Turn it off in **Settings › General › Updates**, or answer no in `cc-sessions setup`.
   With it off, the same place has **Update now**, and `cc-sessions update` installs the
-  latest version from a terminal (`--check` only looks). **What's new** there shows the
-  latest changes again.
+  latest version from a terminal (`--check` only looks).
+- **What's new** in the same place shows the last few versions' changes at any time.
 - Only the copy the installer put in place updates itself. A build from source is told
   about new versions and left alone.
 - It uses the system's `curl` (or `wget`, or PowerShell on Windows) and sends nothing but
@@ -243,7 +246,7 @@ In the settings folder above:
 | `history-cache.json` | Rebuildable index of saved conversations, with their token counts. |
 | `ui-token` | Access key for the web app (readable only by you). |
 | `ui.pid`, `ui.log` | The running server's pid and its log. |
-| `update.json` | The last update check, and the last update installed (for "what's new"). |
+| `update.json` | The last update check, and the last update installed (for What's new). |
 
 `idleMinutes` in `config.json` sets how long the server waits with no page open before it
 stops; `0` keeps it running until you stop it.
@@ -285,6 +288,10 @@ Everything that differs between systems is in `src/os/`. The page is in `ui/` an
 into the program; set `CC_SESSIONS_UI_DIR=ui` to serve it from disk while working on it.
 `CC_SESSIONS_HOME` and `CC_SESSIONS_PORT` point a run at a different settings folder and
 port.
+
+Each release adds its notes to the top of `ui/changes.json` (version, date, title, notes),
+which the What's new window reads. `cargo test` fails if the first entry is not the
+version in `Cargo.toml`, so bump both together.
 
 ## Licence
 
