@@ -21,6 +21,7 @@ use crate::claude::{self, AuthInfo};
 use crate::closing;
 use crate::editors;
 use crate::history::{self, Artifact, Tokens};
+use crate::loops;
 use crate::os;
 use crate::pins::{self, Pins};
 use crate::report;
@@ -260,9 +261,12 @@ impl App {
     fn history(&self) -> Result<Value> {
         let listing = self.sessions(false)?;
         let accounts = accounts::load_accounts(false)?;
-        let items: Vec<Value> = history::history_items()?
+        let all = history::history_items()?;
+        let loops = loops::assess_all(&all);
+        let items: Vec<Value> = all
             .iter()
-            .filter_map(|item| {
+            .zip(loops)
+            .filter_map(|(item, verdict)| {
                 let acc = accounts.iter().find(|a| a.name == item.account)?;
                 let target = Target::from_history(item, &listing.0);
                 let live = listing.0.iter().any(|s| s.live && s.account == item.account && s.session_id == item.session_id);
@@ -284,6 +288,7 @@ impl App {
                     "tokens": item.tokens,
                     "live": live,
                     "resumeCommand": (!item.cwd.is_empty()).then(|| resume::display_command(acc, &target)),
+                    "loop": verdict,
                 }))
             })
             .collect();
@@ -509,6 +514,15 @@ impl App {
                 Ok(update::status())
             }
             "/api/update/install" => self.update_now(),
+            "/api/loops/dismiss" => {
+                // "Not a loop" (or, with dismissed false, taking that back).
+                let (account, session_id) = (need("account")?, need("sessionId")?);
+                if !self.known(&accounts::get_account(account)?, session_id)? {
+                    return err("Session not found.");
+                }
+                loops::set_dismissed(account, session_id, body.get("dismissed").and_then(Value::as_bool).unwrap_or(true))?;
+                Ok(json!({ "ok": true }))
+            }
             "/api/settings/auto-update" => {
                 let mut config = accounts::load_config();
                 config.auto_update = body.get("on").and_then(Value::as_bool).ok_or_else(|| Error("Missing 'on'.".into()))?;

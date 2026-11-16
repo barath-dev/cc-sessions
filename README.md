@@ -120,6 +120,12 @@ files in them, accounts as tags in the sidebar.
   (name, status, account, last active, prompts, tokens or tokens per prompt); click it
   again to reverse. **Per prompt** finds sessions that used a lot for each thing asked,
   often ones going round in circles on the same problem.
+- **Worth a look** (in the sidebar, and as a badge on the session) lists sessions that may
+  have gone round in circles: the same error coming back after each fix, edits undoing
+  earlier edits, many tokens for little changed, or you saying it still isn't working. Only
+  sessions with real work in them are judged (20+ replies, 250K+ tokens without cache
+  reads, 5+ edits to the project), against your own usual. Quick Look says why; **Not a
+  loop** hides it and makes the check a little stricter from then on.
 - **Quick Look** (Space or double-click) shows a session's details and actions; a
   right-click menu has the rest, including **Open in VS Code** (or Cursor, Zed...) for a
   session's folder or a whole folder of sessions.

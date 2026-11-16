@@ -12,14 +12,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::accounts;
+use crate::loops::{Gatherer, Work};
 use crate::pins::Pins;
 use crate::store::{self, state_file};
 use crate::titles::Titles;
 use crate::util::{iso_to_ms, path_str, squash, Error, Result};
 
 const PREVIEW_CHARS: usize = 300;
+/// The tools whose use says what work was done: commands run and files edited.
+const WORK_TOOLS: [&[u8]; 4] = [b"\"name\":\"Bash\"", b"\"name\":\"Edit\"", b"\"name\":\"Write\"", b"\"name\":\"MultiEdit\""];
 /// Raise when `Entry` gains something old cache entries do not have.
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 6;
 /// How many prompts are kept for searching: this many from each end of a conversation.
 const SEARCH_PROMPTS: usize = 20;
 const ARTIFACT_URLS: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
@@ -73,6 +76,8 @@ pub struct Entry {
     /// Tokens by the hour they were used in (hours since 1970, UTC), for the usage view.
     pub hours: Vec<(i64, Tokens)>,
     pub models: BTreeMap<String, Tokens>,
+    /// What was done, for spotting sessions going round in circles.
+    pub work: Work,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unreadable: bool,
 }
@@ -115,6 +120,8 @@ pub struct HistoryItem {
     pub hours: Vec<(i64, Tokens)>,
     #[serde(skip)]
     pub models: BTreeMap<String, Tokens>,
+    #[serde(skip)]
+    pub work: Work,
 }
 
 fn between<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
@@ -246,6 +253,7 @@ fn index_transcript(path: &Path) -> Entry {
     let (mut custom, mut ai, mut agent) = (None, None, None);
     let mut typed: Vec<String> = Vec::new();
     let mut replies: HashSet<Vec<u8>> = HashSet::new();
+    let mut work = Gatherer::default();
     let Ok(file) = File::open(path) else {
         entry.unreadable = true;
         return entry;
@@ -273,13 +281,28 @@ fn index_transcript(path: &Path) -> Entry {
         let needs_meta = entry.cwd.is_none() || entry.started_at.is_none();
         // A model's reply, with the tokens it used. Each reply is read once, however many lines it spans.
         if memmem::find(&line, b"\"type\":\"assistant\"").is_some() && memmem::find(&line, b"\"usage\"").is_some() {
-            if reply_id(&line).is_none_or(|id| replies.insert(id.to_vec())) {
+            let new_reply = reply_id(&line).is_none_or(|id| replies.insert(id.to_vec()));
+            // Commands run and edits made, from any line of a reply.
+            let tools = memmem::find(&line, b"\"tool_use\"").is_some() && WORK_TOOLS.iter().any(|name| memmem::find(&line, name).is_some());
+            if new_reply || tools {
                 if let Ok(rec) = serde_json::from_slice::<Value>(&line) {
-                    note_usage(&mut entry, &rec);
+                    if new_reply {
+                        work.reply();
+                        note_usage(&mut entry, &rec);
+                    }
+                    if tools {
+                        work.assistant(&rec);
+                    }
                 }
             }
             if !needs_meta {
                 continue;
+            }
+        }
+        // A command that failed.
+        if is_user && memmem::find(&line, b"\"is_error\":true").is_some() {
+            if let Ok(rec) = serde_json::from_slice::<Value>(&line) {
+                work.results(&rec);
             }
         }
         if !(is_title || is_link || is_user || (needs_meta && memmem::find(&line, b"\"cwd\"").is_some())) {
@@ -323,6 +346,7 @@ fn index_transcript(path: &Path) -> Entry {
                 note_artifact(&mut entry.artifacts, result, "url", at);
             }
             if let Some(prompt) = prompt_text(&rec) {
+                work.prompt(&prompt);
                 let prompt = truncate(&prompt, PREVIEW_CHARS);
                 entry.prompts += 1;
                 if entry.first_prompt.is_none() {
@@ -344,6 +368,7 @@ fn index_transcript(path: &Path) -> Entry {
     let from_prompt = entry.first_prompt.as_deref().map(|p| truncate(p, 80)).filter(|p| !p.is_empty());
     entry.title = custom.or(ai).or(agent).or(from_prompt);
     entry.prompt_text = typed.join("\n");
+    entry.work = work.finish();
     entry
 }
 
@@ -405,6 +430,7 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 tokens: entry.tokens,
                 hours: entry.hours.clone(),
                 models: entry.models.clone(),
+                work: entry.work.clone(),
             });
             fresh.insert(key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry });
         }

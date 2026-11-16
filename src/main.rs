@@ -11,6 +11,7 @@ mod cli;
 mod closing;
 mod editors;
 mod history;
+mod loops;
 mod os;
 mod pins;
 mod proc;

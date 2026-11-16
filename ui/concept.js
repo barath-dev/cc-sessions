@@ -50,7 +50,7 @@ const ART = {
 };
 // Sidebar and toolbar icons, from icons.js, by what they stand for here.
 const GLYPHS = {
-  recents: 'clock', needs: 'bell', open: 'circle-play', usage: 'chart-column', home: 'house', all: 'folders', folder: 'folder',
+  recents: 'clock', needs: 'bell', loops: 'rotate-ccw', open: 'circle-play', usage: 'chart-column', home: 'house', all: 'folders', folder: 'folder',
   icons: 'layout-grid', list: 'list', columns: 'columns-3', back: 'chevron-left', forward: 'chevron-right', search: 'search', settings: 'settings',
 };
 const glyph = (name) => {
@@ -124,6 +124,8 @@ const SORTS = {
   active: { label: 'Last active', dir: 'desc', session: (a, b) => a.at - b.at, folder: (a, b) => latest(a.node) - latest(b.node) },
   prompts: { label: 'Prompts', dir: 'desc', blank: (e) => !e.item, session: (a, b) => promptsOf(a) - promptsOf(b), folder: (a, b) => folderPrompts(a.node) - folderPrompts(b.node) },
   tokens: { label: 'Tokens', dir: 'desc', blank: (e) => !e.tokens, session: (a, b) => metricOf(a.tokens) - metricOf(b.tokens), folder: (a, b) => folderTokens(a.node) - folderTokens(b.node) },
+  loop: { label: 'Loop score', hint: 'How much a session looks like it went round in circles', dir: 'desc', blank: (e) => !(loopOf(e) && loopOf(e).measured),
+    session: (a, b) => ((loopOf(a) && loopOf(a).score) || 0) - ((loopOf(b) && loopOf(b).score) || 0), folder: (a, b) => byName(a, b) },
   // A session going round in circles uses a lot for each thing asked: sort by this to find it.
   perPrompt: { label: 'Per prompt', hint: 'Tokens for each prompt typed. A session going round in circles uses many', dir: 'desc', blank: (e) => !perPromptOf(e), session: (a, b) => perPromptOf(a) - perPromptOf(b), folder: (a, b) => folderPerPrompt(a.node) - folderPerPrompt(b.node) },
 };
@@ -207,6 +209,9 @@ function folderPath(id) {
 }
 
 const needsYou = (e) => e.open && (e.status === 'blocked' || (e.status === 'done' && Date.now() - e.at < DAY));
+// The server's loop check on a saved session: { measured, score, look, reasons, dismissed } or { measured: false, why }.
+const loopOf = (e) => (e.item && e.item.loop) || null;
+const worthALook = (e) => Boolean(loopOf(e) && loopOf(e).look);
 
 function accountColor(name) {
   const accounts = S.data ? S.data.accounts : [];
@@ -253,6 +258,7 @@ function buildTree(list) {
 function placeName(place = S.place) {
   if (place.kind === 'recents') return 'Recents';
   if (place.kind === 'needs') return 'Needs you';
+  if (place.kind === 'loops') return 'Worth a look';
   if (place.kind === 'open') return 'Open now';
   if (place.kind === 'usage') return 'Usage';
   if (place.kind === 'tag') return place.account;
@@ -344,6 +350,8 @@ function itemsIn(place = S.place, { search = S.q } = {}) {
     }
   } else if (place.kind === 'recents') {
     sessions = entries;
+  } else if (place.kind === 'loops') {
+    sessions = entries.filter(worthALook);
   } else if (place.kind === 'needs') {
     sessions = entries.filter(needsYou);
   } else if (place.kind === 'open') {
@@ -406,6 +414,8 @@ function renderSidebar() {
   $('#sb').replaceChildren(...[
     sbItem({ place: { kind: 'recents' }, icon: 'recents', label: 'Recents' }),
     sbItem({ place: { kind: 'needs' }, icon: 'needs', label: 'Needs you', count: entries.filter(needsYou).length, hot: true }),
+    // Sessions that may be going round in circles, once any session is big enough to be judged.
+    entries.some((e) => loopOf(e) && loopOf(e).measured) && sbItem({ place: { kind: 'loops' }, icon: 'loops', label: 'Worth a look', count: entries.filter(worthALook).length }),
     sbItem({ place: { kind: 'open' }, icon: 'open', label: 'Open now', count: entries.filter((e) => e.open).length }),
     sbItem({ place: { kind: 'usage' }, icon: 'usage', label: 'Usage' }),
     h('div', { class: 'sb-head' }, 'Favourites'),
@@ -479,7 +489,8 @@ function folderSub(node) {
 function nameNode(item, where) {
   if (item.kind === 'session' && S.renaming === item.key) return renameBox(item);
   return h('span', { class: where === 'cell' ? 'cell-name' : 'label' }, item.name,
-    item.kind === 'session' && h('span', { class: 'tagdot', style: { '--acct': accountColor(item.account) }, title: item.account }));
+    item.kind === 'session' && h('span', { class: 'tagdot', style: { '--acct': accountColor(item.account) }, title: item.account }),
+    item.kind === 'session' && worthALook(item) && loopBadge(item));
 }
 
 function cellId(key) {
@@ -511,7 +522,8 @@ function renderContent() {
   if (!items.length && S.view !== 'columns') {
     content.replaceChildren(h('p', { class: 'empty' }, !S.history ? 'Reading saved conversations…'
       : S.q.trim() ? `Nothing in ${placeName()} matches “${S.q.trim()}”.`
-        : S.place.kind === 'needs' ? 'Nothing is waiting for you.' : 'Nothing here.'));
+        : S.place.kind === 'needs' ? 'Nothing is waiting for you.'
+          : S.place.kind === 'loops' ? 'Nothing looks stuck. Sessions that may be going round in circles show up here.' : 'Nothing here.'));
     return;
   }
   const scroll = content.scrollTop;
@@ -672,6 +684,7 @@ function sessionFacts(e) {
       h('span', { class: 'st', 'data-status': e.status }, statusText(e)),
       h('span', { title: fullDate(e.at) }, ago(e.at))),
     h('div', { class: 'actions' }, actionButtons(e)),
+    loopSection(e),
     h('dl', { class: 'facts' }, [
       ['Folder', e.cwd],
       ['Account', account.email ? `${e.account} (${account.email})` : e.account],
@@ -680,6 +693,7 @@ function sessionFacts(e) {
       ['Per prompt', perPromptOf(e) ? `${perPromptText(perPromptOf(e))} tokens (${metricLabel().toLowerCase()})` : null],
       ['Tokens', e.tokens && tokenSum(e.tokens) ? `${tokens(tokenSum(e.tokens))}: ${tokens(e.tokens.input)} in, ${tokens(e.tokens.output)} out, ${tokens(e.tokens.cacheWrite)} cache written, ${tokens(e.tokens.cacheRead)} cache read` : null],
       ['Session', e.sessionId],
+      ['Loop check', loopOf(e) && (loopOf(e).measured ? (loopOf(e).look ? 'Worth a look' : loopOf(e).dismissed ? 'You said it was not a loop' : 'Nothing found') : `Not measured: ${loopOf(e).why}`)],
     ].filter(([, v]) => v).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)])),
     item && item.firstPrompt && [h('h3', { class: 'facts-h' }, 'First prompt'), h('p', { class: 'prompt' }, item.firstPrompt)],
     later.length > 0 && [h('h3', { class: 'facts-h' }, 'Latest prompts'), later.map((p) => h('p', { class: 'prompt' }, p))],
@@ -1313,6 +1327,34 @@ function openInEditor(item) {
   const target = item.kind === 'folder' ? { folder: folderPath(item.node.id) }
     : item.session ? { key: item.session.key } : { account: item.account, sessionId: item.sessionId };
   return act(() => window.ccEditor.open(target), (name) => `Opened ${item.name} in ${name}.`);
+}
+
+// ------------------------------------------------------------- loop check
+
+function loopBadge(e) {
+  return h('span', { class: 'loop-badge', title: `Worth a look: ${loopOf(e).reasons.join(' · ')}` }, window.ccIcon('rotate-ccw'), 'Worth a look');
+}
+
+// Why a session may be going round in circles, and a way to say it was not.
+function loopSection(e) {
+  const verdict = loopOf(e);
+  if (!verdict || !verdict.measured || (!verdict.look && !verdict.dismissed)) return null;
+  if (verdict.dismissed) {
+    return h('div', { class: 'loop-note is-dismissed' },
+      h('span', {}, 'You said this session was not going round in circles.'),
+      h('button', { type: 'button', class: 'btn btn-small', onclick: () => markLoop(e, false) }, 'Undo'));
+  }
+  return h('section', { class: 'loop-note' },
+    h('h3', {}, window.ccIcon('rotate-ccw'), 'Worth a look: it may have gone round in circles'),
+    h('ul', {}, verdict.reasons.map((r) => h('li', {}, r))),
+    h('div', { class: 'loop-actions' },
+      h('button', { type: 'button', class: 'btn btn-small', title: 'Hide this, and flag a little less from now on', onclick: () => markLoop(e, true) }, 'Not a loop')));
+}
+
+async function markLoop(e, dismissed) {
+  await act(() => api('/api/loops/dismiss', { account: e.account, sessionId: e.sessionId, dismissed }),
+    dismissed ? 'Thanks. It will flag a little less from now on.' : 'Back on the list.');
+  await loadHistory();
 }
 
 function resume(e) {

@@ -660,6 +660,80 @@ fn open_in_editor() {
     assert_eq!(open(json!({ "account": "work", "sessionId": session_id })).0, 400, "the editor is required");
 }
 
+/// A transcript of `replies` replies in /code/app, with Claude's tool calls and their results.
+/// `round(n)` gives each reply's tool call, as (tool, input, result text, is it an error).
+fn work_transcript(project: &Path, session_id: &str, first: &str, prompts: &[(usize, &str)], replies: usize, round: impl Fn(usize) -> (&'static str, Value, String, bool)) {
+    let mut lines = vec![json!({ "type": "user", "cwd": "/code/app", "timestamp": "2026-11-10T06:00:00.000Z", "message": { "role": "user", "content": first } }).to_string()];
+    for n in 0..replies {
+        let at = format!("2026-11-10T07:{:02}:00.000Z", n % 60);
+        for (after, text) in prompts.iter().filter(|(after, _)| *after == n) {
+            let _ = after;
+            lines.push(json!({ "type": "user", "timestamp": at, "message": { "role": "user", "content": text } }).to_string());
+        }
+        let (tool, input, result, is_error) = round(n);
+        let id = format!("toolu_{n}");
+        lines.push(json!({ "type": "assistant", "timestamp": at, "message": { "id": format!("msg_{n}"), "model": "claude-opus-5-5", "role": "assistant",
+            "content": [{ "type": "tool_use", "id": id, "name": tool, "input": input }],
+            "usage": { "input_tokens": 20000, "output_tokens": 500, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 100000 } } }).to_string());
+        lines.push(json!({ "type": "user", "timestamp": at, "message": { "role": "user",
+            "content": [{ "type": "tool_result", "tool_use_id": id, "is_error": is_error, "content": result }] } }).to_string());
+    }
+    fs::write(project.join(format!("{session_id}.jsonl")), lines.join("\n")).unwrap();
+}
+
+#[test]
+fn spots_a_session_going_round_in_circles() {
+    let mut m = Machine::new("loops", 47819);
+    let project = m.account("work").join("projects").join("-code-app");
+    fs::create_dir_all(&project).unwrap();
+    // Stuck: flips one line back and forth, and the same test keeps failing.
+    let stuck = "aaaa0007-3333-4444-5555-666677778888";
+    work_transcript(&project, stuck, "make the login work", &[(17, "still not working, same error")], 24, |n| {
+        if n % 2 == 0 {
+            let (old, new) = if n % 4 == 0 { ("let ok = false;", "let ok = true;") } else { ("let ok = true;", "let ok = false;") };
+            ("Edit", json!({ "file_path": "/code/app/src/login.ts", "old_string": old, "new_string": new }), "The file has been updated.".into(), false)
+        } else {
+            ("Bash", json!({ "command": "npm test" }), format!("Exit code 1\nFAIL src/login.test.ts ({n} ms)\nError: expected 200, got 401"), true)
+        }
+    });
+    // Calm, and as big: every edit adds something new, and the tests pass.
+    let calm = "aaaa0008-3333-4444-5555-666677778888";
+    work_transcript(&project, calm, "build the settings page", &[], 24, |n| {
+        if n % 2 == 0 {
+            ("Edit", json!({ "file_path": format!("/code/app/src/part{n}.ts"), "old_string": "", "new_string": format!("export const part{n} = {n};\nexport const more{n} = true;") }), "The file has been updated.".into(), false)
+        } else {
+            ("Bash", json!({ "command": "npm test" }), "Tests: 12 passed".into(), false)
+        }
+    });
+    m.seal();
+
+    assert!(m.run(&["--no-open"]).status.success());
+    let token = m.token();
+    let verdict = |session: &str| {
+        let (_, body) = m.get("/api/history", Some(&token), None);
+        let history: Value = serde_json::from_str(&body).unwrap();
+        history["items"].as_array().unwrap().iter().find(|i| i["sessionId"] == session).unwrap()["loop"].clone()
+    };
+    let flagged = verdict(stuck);
+    assert_eq!(flagged["measured"], true, "{flagged}");
+    assert_eq!(flagged["look"], true, "{flagged}");
+    let reasons = flagged["reasons"].to_string();
+    assert!(reasons.contains("came back") && reasons.contains("Error: expected 200, got 401"), "{reasons}");
+    assert!(reasons.contains("still not working"), "{reasons}");
+    let fine = verdict(calm);
+    assert_eq!(fine["measured"], true, "{fine}");
+    assert_eq!(fine["look"], false, "a big job is not a loop: {fine}");
+
+    // "Not a loop" hides it; taking that back brings it back.
+    let dismiss = |on: bool| m.post("/api/loops/dismiss", &token, "Content-Type: application/json\r\n", &json!({ "account": "work", "sessionId": stuck, "dismissed": on }).to_string()).0;
+    assert_eq!(dismiss(true), 200);
+    let hidden = verdict(stuck);
+    assert_eq!((hidden["look"].clone(), hidden["dismissed"].clone()), (json!(false), json!(true)), "{hidden}");
+    assert_eq!(dismiss(false), 200);
+    assert_eq!(verdict(stuck)["look"], true);
+    assert_eq!(m.post("/api/loops/dismiss", &token, "Content-Type: application/json\r\n", r#"{"account":"work","sessionId":"nope"}"#).0, 400);
+}
+
 // ------------------------------------------------------------------- updates
 
 type Files = Arc<Mutex<HashMap<String, Vec<u8>>>>;

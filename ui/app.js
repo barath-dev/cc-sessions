@@ -1006,6 +1006,7 @@ function entryRow(e, folder, hit) {
       } },
       h('span', { class: 'row-title' },
         nameEl(e, 'row'),
+        worthALook(e) && loopBadge(e),
         sub.length > 0 && h('span', { class: 'row-sub' }, sub),
         hit && hit !== true && h('span', { class: 'row-hit' }, hit.before, h('mark', {}, hit.match), hit.after)),
       accountTag(e.account),
@@ -1043,6 +1044,36 @@ function editorButton(e, quiet = false) {
     'aria-label': quiet ? `Open ${e.name}'s folder in ${editor.name}` : null, title: `Open its folder in ${editor.name}`,
     onclick: () => act(() => window.ccEditor.open(target), (name) => `Opened ${e.name} in ${name}.`) },
   icon('square-code'), !quiet && `Open in ${editor.name}`);
+}
+
+// -- loop check: sessions that may be going round in circles (the server decides, with reasons)
+
+const loopOf = (e) => (e.item && e.item.loop) || null;
+const worthALook = (e) => Boolean(loopOf(e) && loopOf(e).look);
+
+function loopBadge(e) {
+  return h('span', { class: 'loop-badge', title: `Worth a look: ${loopOf(e).reasons.join(' · ')}` }, icon('rotate-ccw'), 'Worth a look');
+}
+
+function loopSection(e) {
+  const verdict = loopOf(e);
+  if (!verdict || !verdict.measured || (!verdict.look && !verdict.dismissed)) return null;
+  if (verdict.dismissed) {
+    return h('div', { class: 'loop-note is-dismissed' },
+      h('span', {}, 'You said this session was not going round in circles.'),
+      h('button', { type: 'button', class: 'btn btn-small', onclick: () => markLoop(e, false) }, 'Undo'));
+  }
+  return h('section', { class: 'loop-note' },
+    h('h3', {}, icon('rotate-ccw'), 'Worth a look: it may have gone round in circles'),
+    h('ul', {}, verdict.reasons.map((r) => h('li', {}, r))),
+    h('div', { class: 'loop-actions' },
+      h('button', { type: 'button', class: 'btn btn-small', title: 'Hide this, and flag a little less from now on', onclick: () => markLoop(e, true) }, 'Not a loop')));
+}
+
+async function markLoop(e, dismissed) {
+  await act(() => api('/api/loops/dismiss', { account: e.account, sessionId: e.sessionId, dismissed }),
+    dismissed ? 'Thanks. It will flag a little less from now on.' : 'Back on the list.');
+  await loadHistory();
 }
 
 // On a row it is an icon among the quick actions; in the details it has its word too.
@@ -1156,6 +1187,7 @@ function entryDetails(e, where) {
   const timeline = s ? s.timeline.filter((t) => t.detail).reverse() : [];
   const later = item ? item.lastPrompts.filter((p) => p !== item.firstPrompt) : [];
   return h('div', { class: 'details' },
+    loopSection(e),
     h('div', { class: 'details-actions' },
       mainAction(e),
       e.command && h('button', { type: 'button', class: 'btn btn-small',
