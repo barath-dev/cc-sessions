@@ -245,7 +245,7 @@ const STUCK: &[&str] = &[
     "still not", "still isn't", "still isnt", "still doesn't", "still doesnt", "still facing", "still getting", "still failing",
     "still broken", "still the same", "still seeing", "still showing", "still happening", "still wrong", "still an issue",
     "still having", "same error", "same issue", "same problem", "same bug", "didn't work", "didnt work", "did not work",
-    "not fixed", "isn't fixed", "nothing changed", "no change", "wrong again", "broken again", "failing again", "again the same",
+    "not fixed", "isn't fixed", "nothing changed", "wrong again", "broken again", "failing again", "again the same",
     "not working again", "doesn't work either", "doesnt work either",
 ];
 
@@ -475,6 +475,8 @@ mod tests {
         assert!(!sounds_stuck("keep this look like this"));
         assert!(!sounds_stuck("try to access it again"));
         assert!(!sounds_stuck("is it still running?"));
+        assert!(!sounds_stuck("are there no changes in the crm repo?"), "a question, not a complaint");
+        assert!(!sounds_stuck("there should be no change after a service is moved"));
     }
 
     fn tool_use(id: &str, name: &str, input: Value) -> Value {

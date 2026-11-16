@@ -22,7 +22,7 @@ const PREVIEW_CHARS: usize = 300;
 /// The tools whose use says what work was done: commands run and files edited.
 const WORK_TOOLS: [&[u8]; 4] = [b"\"name\":\"Bash\"", b"\"name\":\"Edit\"", b"\"name\":\"Write\"", b"\"name\":\"MultiEdit\""];
 /// Raise when `Entry` gains something old cache entries do not have.
-const CACHE_VERSION: u32 = 6;
+const CACHE_VERSION: u32 = 7;
 /// How many prompts are kept for searching: this many from each end of a conversation.
 const SEARCH_PROMPTS: usize = 20;
 const ARTIFACT_URLS: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
