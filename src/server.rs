@@ -53,6 +53,8 @@ const UI: &[(&str, &str, &[u8])] = &[
     ("/sky.js", "text/javascript; charset=utf-8", include_bytes!("../ui/sky.js")),
     ("/settings.css", "text/css; charset=utf-8", include_bytes!("../ui/settings.css")),
     ("/favicon.svg", "image/svg+xml", include_bytes!("../ui/favicon.svg")),
+    // What changed in each version, for the What's new window.
+    ("/changes.json", "application/json", include_bytes!("../ui/changes.json")),
     // The Finder view: the same sessions as a Finder-style browser. /concept is its first address.
     ("/finder", "text/html; charset=utf-8", include_bytes!("../ui/concept.html")),
     ("/concept", "text/html; charset=utf-8", include_bytes!("../ui/concept.html")),

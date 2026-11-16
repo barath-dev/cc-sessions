@@ -1,0 +1,69 @@
+[
+  {
+    "version": "2.7.2",
+    "date": "2026-11-16",
+    "title": "What's new, in the page",
+    "notes": [
+      "After an update, a What's new window lists the changes in every version since the one you had, instead of a link to GitHub.",
+      "Settings › General › Updates has a What's new button to see them again."
+    ]
+  },
+  {
+    "version": "2.7.1",
+    "date": "2026-11-16",
+    "title": "Loop check: \"no change\" is not a complaint",
+    "notes": [
+      "\"No change\" no longer counts as saying a fix failed: it matched questions like \"are there no changes in the repo?\". Earlier counts are corrected."
+    ]
+  },
+  {
+    "version": "2.7.0",
+    "date": "2026-11-16",
+    "title": "Spot sessions going round in circles",
+    "notes": [
+      "Worth a look: sessions that may have gone round in circles, from what the transcripts show: the same error coming back after each fix, edits putting back text taken out earlier, many tokens for little changed, and the person saying it still isn't working.",
+      "Only sessions with real work in them are judged (20+ replies, 250K+ tokens without cache reads, 5+ edits to the project), against your own usual; spend alone is never enough.",
+      "A Worth a look place in the Finder sidebar, a badge on the session, the reasons in Quick Look and the classic details, Loop score in the Sort menu, and Not a loop, which hides it and raises the bar a little."
+    ]
+  },
+  {
+    "version": "2.6.1",
+    "date": "2026-11-15",
+    "title": "Tokens per prompt",
+    "notes": [
+      "A Per prompt column in the Finder layout's List view: a session's tokens divided by the prompts typed. Sort by it to bring sessions that used a lot for each thing asked to the top.",
+      "Folders show their totals' ratio. Also in the Sort menu and in Quick Look."
+    ]
+  },
+  {
+    "version": "2.6.0",
+    "date": "2026-11-15",
+    "title": "Auto-update, problem reports, editors and column sorting",
+    "notes": [
+      "Auto-update, on by default: once a day it looks for a new release, checks it against the release's SHA-256 list, swaps it in and restarts. Settings › General › Updates, or cc-sessions update.",
+      "Report a problem from Settings, from the Report button on any error, or with cc-sessions report: a GitHub issue filled in with version, system and recent errors, with folders left out.",
+      "Open a session's folder in VS Code, Cursor, Zed, Windsurf, Sublime Text or a JetBrains IDE, picked in Settings.",
+      "Sort the List view by any column, either way."
+    ]
+  },
+  {
+    "version": "2.5.1",
+    "date": "2026-11-14",
+    "title": "3D usage model and fixes",
+    "notes": [
+      "The 3D usage view, rebuilt: Angled, Front, Top, Side and Last 30 days views (keys 1-5), full screen, hover and click a day for its tokens and sessions.",
+      "Heat maps in blue, green, amber, purple, teal or the primary colour.",
+      "The Settings window and the narrow Finder window scroll again."
+    ]
+  },
+  {
+    "version": "2.5.0",
+    "date": "2026-11-14",
+    "title": "Finder layout, token usage, Settings and icons",
+    "notes": [
+      "A Finder-style layout of the same sessions: Icons, List and Columns views, Quick Look, a right-click menu and Finder's keys.",
+      "Token usage from the transcripts: a calendar heat map, when in the week Claude is used, and totals by account, model and session.",
+      "One Settings window for both layouts: layout, Light/Dark, templates, a primary colour, accounts and Disconnect."
+    ]
+  }
+]

@@ -52,12 +52,13 @@ Run `cc-sessions setup` to change any answer later.
 From 2.6.0 on, cc-sessions keeps itself up to date. Once a day the server asks GitHub for
 the latest release. When there is a newer one it downloads the program for your system,
 checks it against the release's SHA-256 list, puts it in place and restarts on it; the
-page reloads and says what's new. Settings and sessions are not touched, and a close in
+page reloads and a What's new window lists the changes in every version since yours. Settings and sessions are not touched, and a close in
 progress finishes first.
 
 - Turn it off in **Settings › General › Updates**, or answer no in `cc-sessions setup`.
   With it off, the same place has **Update now**, and `cc-sessions update` installs the
-  latest version from a terminal (`--check` only looks).
+  latest version from a terminal (`--check` only looks). **What's new** there shows the
+  latest changes again.
 - Only the copy the installer put in place updates itself. A build from source is told
   about new versions and left alone.
 - It uses the system's `curl` (or `wget`, or PowerShell on Windows) and sends nothing but

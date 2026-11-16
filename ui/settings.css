@@ -272,13 +272,13 @@ a.st-btn { text-decoration: none; }
 .toast { display: flex; align-items: center; gap: 0.75rem; }
 .toast-report { flex: none; margin-left: auto; padding: 0.15rem 0.55rem; border: 1px solid currentColor; border-radius: 6px; background: none; color: inherit; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; opacity: 0.9; }
 .toast-report:hover { opacity: 1; }
-/* After an update: a quiet note in the corner, with what's new. */
-.cc-updated { position: fixed; left: 1rem; bottom: 1rem; z-index: 35; display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.6rem 0.55rem 0.8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--window, var(--surface)); color: var(--ink); font-size: 13px; box-shadow: 0 8px 24px rgb(0 0 0 / 0.18); }
-.cc-updated > .cc-icon { width: 1rem; height: 1rem; color: var(--accent); }
-.cc-updated a { color: var(--accent); font-weight: 600; }
-.cc-updated-x { display: grid; place-items: center; width: 1.6rem; height: 1.6rem; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--muted); cursor: pointer; }
-.cc-updated-x:hover { background: var(--hover, rgb(0 0 0 / 0.06)); color: var(--ink); }
-.cc-updated-x .cc-icon { width: 0.9rem; height: 0.9rem; }
+/* What's new: after an update, each version's changes since the one you had. */
+.cc-news { width: min(36rem, calc(100vw - 2rem)); }
+.cc-news-list { display: flex; flex-direction: column; gap: 0.9rem; max-height: min(26rem, calc(100vh - 14rem)); padding-right: 0.25rem; overflow-y: auto; overscroll-behavior: contain; }
+.cc-news-version h4 { display: flex; align-items: baseline; justify-content: space-between; gap: 0.75rem; margin: 0 0 0.3rem; font-size: 14px; }
+.cc-news-tag { flex: none; color: var(--muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.cc-news-version ul { margin: 0; padding-left: 1.15rem; list-style: disc; }
+.cc-news-version li { margin: 0.2rem 0; font-size: 13px; overflow-wrap: anywhere; }
 
 /* Loop check: a session that may be going round in circles. Amber, with words, never colour alone. */
 .loop-badge { display: inline-flex; flex: none; align-items: center; gap: 0.25rem; margin-left: 0.4rem; padding: 0.05rem 0.45rem; border-radius: 999px; background: color-mix(in srgb, #d48a00 16%, transparent); color: #8a5300; font-size: 11px; font-weight: 600; line-height: 1.5; white-space: nowrap; vertical-align: middle; }

@@ -529,20 +529,64 @@
     update = state.update || null;
     if (win && section === 'general' && JSON.stringify(update) !== before) draw();
     const just = update && update.justUpdated;
-    if (just && just.to && just.to.replace(/^v/, '') === version && store('cc-update-seen') !== just.to) showUpdated(just);
+    if (just && just.to && just.to.replace(/^v/, '') === version && store('cc-update-seen') !== just.to) {
+      whatsNew({ just, onClose: () => store('cc-update-seen', just.to) });
+    }
   }
 
-  function showUpdated(just) {
-    if (document.querySelector('.cc-updated')) return;
-    const banner = h('div', { class: 'cc-updated', role: 'status' });
-    const dismiss = () => {
-      store('cc-update-seen', just.to);
-      banner.remove();
-    };
-    banner.append(icon('circle-check'), h('span', {}, `Updated to ${just.to.replace(/^v/, '')}.`),
-      just.notesUrl && h('a', { href: just.notesUrl, target: '_blank', rel: 'noopener noreferrer', onclick: dismiss }, 'What’s new'),
-      h('button', { type: 'button', class: 'cc-updated-x', 'aria-label': 'Dismiss', title: 'Dismiss', onclick: dismiss }, icon('x')));
-    document.body.append(banner);
+  // "v2.7.1" or "2.7.1" as [2, 7, 1]; anything else as null.
+  const versionOf = (tag) => {
+    const m = String(tag || '').trim().replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)$/);
+    return m ? m.slice(1).map(Number) : null;
+  };
+  const isNewer = (a, b) => {
+    for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+    return false;
+  };
+
+  let changes = null;         // ui/changes.json, newest first, once it is needed
+  let showingNews = false;
+
+  // The changes in each version since the one updated from (`just`), or the last few
+  // up to this one when opened from Settings.
+  async function whatsNew({ just = null, onClose } = {}) {
+    if (showingNews) return;
+    showingNews = true;
+    if (!changes) {
+      try {
+        const response = await fetch('/changes.json', { cache: 'no-store' });
+        changes = response.ok ? await response.json() : [];
+      } catch {
+        changes = [];
+      }
+    }
+    const to = versionOf(just ? just.to : version);
+    const from = just && versionOf(just.from);
+    const upTo = changes.filter((c) => versionOf(c.version) && !(to && isNewer(versionOf(c.version), to)));
+    const shown = from ? upTo.filter((c) => isNewer(versionOf(c.version), from)) : upTo.slice(0, just ? 1 : 3);
+    const plain = (tag) => String(tag).replace(/^v/, '');
+
+    const dialog = h('dialog', { class: 'st-dialog cc-news', 'aria-labelledby': 'cc-news-title' });
+    dialog.append(h('div', { class: 'st-form' },
+      h('h3', { id: 'cc-news-title' }, just ? `Updated to ${plain(just.to)}` : 'What’s new'),
+      just && h('p', { class: 'st-hint' },
+        just.from ? `You had ${plain(just.from)}. ` : '', 'Your settings and sessions are as they were.'),
+      h('div', { class: 'cc-news-list' }, shown.length
+        ? shown.map((c) => h('section', { class: 'cc-news-version' },
+          h('h4', {}, h('span', {}, c.title), h('span', { class: 'cc-news-tag' }, c.version)),
+          h('ul', {}, (c.notes || []).map((note) => h('li', {}, note)))))
+        : h('p', { class: 'st-hint' }, 'The notes for this version are on GitHub.')),
+      h('div', { class: 'st-actions' },
+        h('div', { class: 'st-aside' },
+          h('a', { class: 'st-btn st-btn-text', href: (just && just.notesUrl) || `${REPO_URL}/releases`, target: '_blank', rel: 'noopener noreferrer' }, 'All release notes')),
+        h('button', { type: 'button', class: 'st-btn st-btn-primary', autofocus: true, onclick: () => dialog.close() }, 'Got it'))));
+    dialog.addEventListener('close', () => {
+      dialog.remove();
+      showingNews = false;
+      if (onClose) onClose();
+    });
+    document.body.append(dialog);
+    dialog.showModal();
   }
 
   // Folders in a message become <folder>, so a report never carries a path.
@@ -668,7 +712,7 @@
       h('div', { class: 'st-buttons' },
         h('button', { type: 'button', class: 'st-btn', 'data-fk': 'st-check', onclick: checkNow }, icon('rotate-cw'), 'Check now'),
         u && u.available && u.managed && h('button', { type: 'button', class: 'st-btn st-btn-primary', 'data-fk': 'st-update', onclick: updateNow }, icon('download'), `Update to ${u.latest.replace(/^v/, '')}`),
-        u && u.notesUrl && h('a', { class: 'st-link', href: u.notesUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Release notes')));
+        h('button', { type: 'button', class: 'st-btn', 'data-fk': 'st-news', onclick: () => whatsNew() }, icon('list'), 'What’s new')));
   }
 
   function feedbackGroup() {

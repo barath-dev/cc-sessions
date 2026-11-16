@@ -317,6 +317,20 @@ mod tests {
     }
 
     #[test]
+    fn every_version_says_what_changed() {
+        let changes: Vec<Value> = serde_json::from_str(include_str!("../ui/changes.json")).expect("ui/changes.json reads");
+        let version = |entry: &Value| parse_version(entry["version"].as_str().unwrap_or("")).expect("a version like 2.8.0");
+        assert_eq!(changes.first().map(version), parse_version(VERSION), "ui/changes.json starts with this version's notes");
+        for pair in changes.windows(2) {
+            assert!(version(&pair[0]) > version(&pair[1]), "newest first: {} then {}", pair[0]["version"], pair[1]["version"]);
+        }
+        for entry in &changes {
+            let notes = entry["notes"].as_array().map(Vec::len).unwrap_or(0);
+            assert!(entry["title"].as_str().is_some_and(|t| !t.is_empty()) && notes > 0, "{} has a title and notes", entry["version"]);
+        }
+    }
+
+    #[test]
     fn asset_names_match_the_release_files() {
         let name = asset_name();
         assert!(name.starts_with(&format!("cc-sessions-{}-", os::OS_NAME)), "{name}");
