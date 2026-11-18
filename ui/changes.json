@@ -1,5 +1,18 @@
 [
   {
+    "version": "2.8.0",
+    "date": "2026-11-17",
+    "title": "Codex sessions, beside Claude Code",
+    "notes": [
+      "Codex accounts: ~/.codex and any ~/.codex-* folder can be added as accounts (Settings › Accounts lists them under folders not registered yet), or with: cc-sessions account add NAME --tool codex.",
+      "Saved Codex conversations are listed, searched and resumed (codex resume) beside Claude Code's, with Codex's own titles, and counted in Usage by model.",
+      "Running Codex sessions show as open, working or waiting. Close stops the turn Codex is working on and closes its window; a turn Codex carries on with after its window was closed is listed too, and can be stopped. On Windows, running Codex sessions are not found yet.",
+      "The loop check reads Codex's patches and failing commands too.",
+      "Accounts show which tool they are for; a Codex account whose name does not say so carries a small Codex mark.",
+      "Fixed: on macOS, a key pressed while Resume or Log in opened a terminal window could make the command run as a different account. The line is now cleared first."
+    ]
+  },
+  {
     "version": "2.7.2",
     "date": "2026-11-16",
     "title": "What's new, in the page",

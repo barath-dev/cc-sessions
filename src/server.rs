@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::accounts::{self, Account};
-use crate::claude::{self, AuthInfo};
+use crate::tools::{self, AuthInfo, Tool};
 use crate::closing;
 use crate::editors;
 use crate::history::{self, Artifact, Tokens};
@@ -156,7 +156,7 @@ impl App {
         }
     }
 
-    /// Current sessions. `claude agents` only runs when something changed on disk.
+    /// Current sessions. `claude agents` only runs when something changed on disk (or in the running Codex sessions).
     fn sessions(&self, force: bool) -> Result<Listing> {
         let mut cache = self.sessions.lock().unwrap();
         let accounts = accounts::load_accounts(false)?;
@@ -188,7 +188,7 @@ impl App {
         let stale = cache.at.is_none_or(|at| at.elapsed() > max_age);
         if stale || accounts.iter().any(|a| !cache.by_dir.contains_key(&a.dir)) {
             let infos: Vec<AuthInfo> = thread::scope(|scope| {
-                let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || claude::auth_status(acc))).collect();
+                let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || tools::auth_status(acc))).collect();
                 handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
             });
             cache.by_dir = accounts.iter().map(|a| a.dir.clone()).zip(infos).collect();
@@ -211,6 +211,8 @@ impl App {
                 let info = if acc.removed { AuthInfo::default() } else { auth.get(&acc.dir).cloned().unwrap_or_default() };
                 json!({
                     "name": acc.name,
+                    "tool": acc.tool,
+                    "start": acc.start_command(),
                     "alias": acc.alias,
                     "color": acc.color,
                     "dir": tilde(&acc.dir),
@@ -230,7 +232,10 @@ impl App {
         Ok(json!({
             "accounts": accounts,
             "sessions": sessions.iter().map(public).collect::<Vec<_>>(),
-            "unregistered": accounts::unregistered_folders()?.iter().map(|p| tilde(p)).collect::<Vec<_>>(),
+            "unregistered": accounts::unregistered_folders()?
+                .iter()
+                .map(|f| json!({ "dir": tilde(&f.dir), "tool": f.tool, "name": f.name }))
+                .collect::<Vec<_>>(),
             "pinnedFolders": Pins::load()?.folders(),
             "platform": {
                 "os": os::OS_NAME,
@@ -274,6 +279,7 @@ impl App {
                 let live = listing.0.iter().any(|s| s.live && s.account == item.account && s.session_id == item.session_id);
                 Some(json!({
                     "account": item.account,
+                    "tool": item.tool,
                     "id": item.id,
                     "sessionId": item.session_id,
                     "title": item.title,
@@ -532,7 +538,11 @@ impl App {
                 Ok(update::status())
             }
             "/api/accounts/add" => {
-                let (acc, created) = accounts::add_account(need("name")?, text("alias"), text("folder"))?;
+                let tool = match text("tool") {
+                    None => Tool::Claude,
+                    Some(id) => Tool::from_id(id).ok_or_else(|| Error(format!("Unknown tool '{id}'.")))?,
+                };
+                let (acc, created) = accounts::add_account(need("name")?, text("alias"), text("folder"), tool)?;
                 let mut out = self.changed(acc);
                 out["created"] = json!(created);
                 Ok(out)

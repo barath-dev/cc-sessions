@@ -10,11 +10,12 @@ checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
 
 [[package]]
 name = "cc-sessions"
-version = "2.7.2"
+version = "2.8.0"
 dependencies = [
  "getrandom",
  "libc",
  "memchr",
+ "ruzstd",
  "serde",
  "serde_json",
  "tiny_http",
@@ -98,6 +99,12 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "ruzstd"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 
 [[package]]
 name = "serde"

@@ -12,7 +12,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{which, ShellHook};
-use crate::shell::{self, Launch};
+use crate::shell::{self, Launch, Shortcut};
 use crate::store;
 use crate::util::{err, home, path_str, squash, tilde, Error, Result};
 use crate::{proc, store::state_dir};
@@ -34,13 +34,17 @@ fn command_dir() -> PathBuf {
     home().join(".local").join("bin")
 }
 
-pub fn claude_fallbacks() -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("/opt/homebrew/bin/claude"),
-        PathBuf::from("/usr/local/bin/claude"),
-        home().join(".local/bin/claude"),
-        home().join(".claude/local/claude"),
-    ]
+/// Where a tool's command may be when it is not on PATH (as for a server started at login).
+pub fn program_fallbacks(program: &str) -> Vec<PathBuf> {
+    let mut found = vec![
+        PathBuf::from("/opt/homebrew/bin").join(program),
+        PathBuf::from("/usr/local/bin").join(program),
+        home().join(".local/bin").join(program),
+    ];
+    if program == "claude" {
+        found.push(home().join(".claude/local/claude"));
+    }
+    found
 }
 
 pub fn lock_exclusive(file: &File) -> std::io::Result<()> {
@@ -58,9 +62,25 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     // SAFETY: signal 0 only checks that the process exists.
     if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-        return true;
+        return !zombie(pid);
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// A process that has exited but not been collected by its parent, as happens in a
+/// container whose first process never collects them. It still answers signal 0.
+#[cfg(target_os = "linux")]
+fn zombie(pid: u32) -> bool {
+    // "pid (name) S ...": the state follows the name, which may itself hold spaces and brackets.
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| stat.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next()))
+        == Some('Z')
+}
+
+#[cfg(not(target_os = "linux"))]
+fn zombie(_pid: u32) -> bool {
+    false
 }
 
 fn ps(pid: u32, field: &str) -> String {
@@ -88,6 +108,81 @@ pub fn parent_pid(pid: u32) -> Option<u32> {
     ps(pid, "ppid=").parse().ok()
 }
 
+/// "[[dd-]hh:]mm:ss", as `ps -o etime` writes how long a process has run, in seconds.
+fn elapsed_seconds(text: &str) -> Option<i64> {
+    let (days, clock) = match text.split_once('-') {
+        Some((d, rest)) => (d.parse::<i64>().ok()?, rest),
+        None => (0, text),
+    };
+    let parts: Vec<i64> = clock.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let seconds = parts.iter().fold(0, |total, part| total * 60 + part);
+    (!parts.is_empty() && parts.len() <= 3).then_some(days * 86_400 + seconds)
+}
+
+/// Every process of this user, with its command line.
+pub fn processes() -> Vec<super::Process> {
+    let mut cmd = Command::new("ps");
+    // -x includes processes without a terminal; ww keeps long command lines whole.
+    cmd.args(["-x", "-ww", "-o", "pid=,etime=,args=", "-U"]).arg(unsafe { libc::getuid() }.to_string()).env("LC_ALL", "C");
+    let Ok(out) = proc::run(&mut cmd, Duration::from_secs(5)) else { return Vec::new() };
+    let now = crate::util::now_ms();
+    out.stdout
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let pid = words.next()?.parse().ok()?;
+            let ran = words.next().and_then(elapsed_seconds);
+            let args = words.collect::<Vec<_>>().join(" ");
+            Some(super::Process { pid, args, started_at: ran.map(|s| now - s * 1000) })
+        })
+        .collect()
+}
+
+/// The folder each process runs in and the files it has open.
+#[cfg(target_os = "macos")]
+pub fn open_files(pids: &[u32]) -> std::collections::HashMap<u32, super::OpenFiles> {
+    let mut found = std::collections::HashMap::new();
+    if pids.is_empty() {
+        return found;
+    }
+    let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let mut cmd = Command::new("lsof");
+    // -F pfn: one field to a line, p for the process, f for the descriptor, n for the path.
+    cmd.args(["-n", "-P", "-w", "-F", "pfn", "-p", &list]);
+    let Ok(out) = proc::run(&mut cmd, Duration::from_secs(10)) else { return found };
+    let (mut pid, mut cwd_next) = (0, false);
+    for line in out.stdout.lines() {
+        let (tag, value) = line.split_at(line.len().min(1));
+        match tag {
+            "p" => pid = value.parse().unwrap_or(0),
+            "f" => cwd_next = value == "cwd",
+            "n" if pid != 0 => {
+                let entry: &mut super::OpenFiles = found.entry(pid).or_default();
+                if cwd_next {
+                    entry.cwd = Some(PathBuf::from(value));
+                } else if value.starts_with('/') {
+                    entry.files.push(PathBuf::from(value));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn open_files(pids: &[u32]) -> std::collections::HashMap<u32, super::OpenFiles> {
+    pids.iter()
+        .map(|pid| {
+            let base = PathBuf::from(format!("/proc/{pid}"));
+            let files = fs::read_dir(base.join("fd"))
+                .map(|fds| fds.flatten().filter_map(|fd| fs::read_link(fd.path()).ok()).filter(|p| p.is_absolute()).collect())
+                .unwrap_or_default();
+            (*pid, super::OpenFiles { cwd: fs::read_link(base.join("cwd")).ok(), files })
+        })
+        .collect()
+}
+
 /// Ask the process to exit. It can finish what it is writing first.
 pub fn terminate(pid: u32) -> Result<()> {
     // SAFETY: plain kill(2) on a pid the caller has verified.
@@ -95,6 +190,31 @@ pub fn terminate(pid: u32) -> Result<()> {
         Ok(())
     } else {
         Err(Error(format!("could not signal pid {pid}: {}", std::io::Error::last_os_error())))
+    }
+}
+
+/// The process groups of `pid`'s children that each lead a group of their own. A program
+/// that starts commands that way (Codex) leaves them running when it is stopped.
+pub fn child_groups(pid: u32) -> Vec<u32> {
+    let mut cmd = Command::new("ps");
+    cmd.args(["-x", "-o", "pid=,ppid=,pgid=", "-U"]).arg(unsafe { libc::getuid() }.to_string()).env("LC_ALL", "C");
+    let Ok(out) = proc::run(&mut cmd, Duration::from_secs(5)) else { return Vec::new() };
+    out.stdout
+        .lines()
+        .filter_map(|line| {
+            let ids: Vec<u32> = line.split_whitespace().filter_map(|w| w.parse().ok()).collect();
+            matches!(ids[..], [child, parent, group] if parent == pid && group == child).then_some(ids[0])
+        })
+        .collect()
+}
+
+/// Ask every process in a group to exit.
+pub fn terminate_group(group: u32) -> Result<()> {
+    // SAFETY: plain kill(2) on a process group the caller found under a verified pid.
+    if unsafe { libc::kill(-(group as libc::pid_t), libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(Error(format!("could not signal group {group}: {}", std::io::Error::last_os_error())))
     }
 }
 
@@ -262,7 +382,9 @@ fn has_iterm() -> bool {
 pub fn open_terminal(launch: &Launch) -> Result<String> {
     let (app, script) = if has_iterm() { ("iTerm", ITERM_SCRIPT) } else { ("Terminal", TERMINAL_SCRIPT) };
     let mut cmd = Command::new("osascript");
-    cmd.args(["-e", script, &shell::posix(launch, false)]);
+    // The command is typed into the new window's shell. Ctrl-U first clears what
+    // reached it before, such as keys pressed as the window came to the front.
+    cmd.args(["-e", script, &format!("\u{15}{}", shell::posix(launch, false))]);
     let out = proc::run(&mut cmd, Duration::from_secs(30)).map_err(|_| {
         Error(format!("{app} did not respond. If macOS asked for permission to control it, allow it and try again."))
     })?;
@@ -340,9 +462,8 @@ fn command_dir_on_path() -> bool {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d == dir)).unwrap_or(false)
 }
 
-/// Rewrite the generated shortcut files from the registry. `entries` is
-/// (alias, config folder or None for the default account).
-pub fn write_account_shortcuts(entries: &[(String, Option<String>)], manage: bool) -> Result<()> {
+/// Rewrite the generated shortcut files from the registry.
+pub fn write_account_shortcuts(entries: &[Shortcut], manage: bool) -> Result<()> {
     store::write_text(&state_dir().join("aliases.sh"), &shell::aliases_sh(entries), false)?;
     if manage {
         if let Some(fish) = fish_conf() {

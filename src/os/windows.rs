@@ -22,7 +22,7 @@ use windows_sys::Win32::System::IO::OVERLAPPED;
 
 use super::{which, ShellHook};
 use crate::proc;
-use crate::shell::{self, Launch};
+use crate::shell::{self, Launch, Shortcut};
 use crate::store;
 use crate::util::{err, home, path_str, Error, Result};
 
@@ -65,10 +65,11 @@ fn bin_dir() -> PathBuf {
     install_dir().join("bin")
 }
 
-pub fn claude_fallbacks() -> Vec<PathBuf> {
+/// Where a tool's command may be when it is not on PATH.
+pub fn program_fallbacks(program: &str) -> Vec<PathBuf> {
     vec![
-        home().join(".local").join("bin").join("claude.exe"),
-        env_dir("APPDATA", &["AppData", "Roaming"]).join("npm").join("claude.cmd"),
+        home().join(".local").join("bin").join(format!("{program}.exe")),
+        env_dir("APPDATA", &["AppData", "Roaming"]).join("npm").join(format!("{program}.cmd")),
     ]
 }
 
@@ -160,6 +161,17 @@ pub fn parent_pid(pid: u32) -> Option<u32> {
     }
 }
 
+/// Running processes are not looked through here yet (a command line and open
+/// files need more than the system's process list gives), so running Codex
+/// sessions are not found on Windows.
+pub fn processes() -> Vec<super::Process> {
+    Vec::new()
+}
+
+pub fn open_files(_pids: &[u32]) -> std::collections::HashMap<u32, super::OpenFiles> {
+    std::collections::HashMap::new()
+}
+
 /// End the process and what it started. There is no gentler option here.
 pub fn terminate(pid: u32) -> Result<()> {
     let mut cmd = Command::new("taskkill");
@@ -170,6 +182,15 @@ pub fn terminate(pid: u32) -> Result<()> {
     } else {
         err(format!("could not end pid {pid}: {}", out.last_line()))
     }
+}
+
+/// Nothing to find: `terminate` already ends what a process started.
+pub fn child_groups(_pid: u32) -> Vec<u32> {
+    Vec::new()
+}
+
+pub fn terminate_group(group: u32) -> Result<()> {
+    terminate(group)
 }
 
 /// Start with no console of its own, so closing the terminal does not take it down.
@@ -294,21 +315,21 @@ pub fn open_terminal(launch: &Launch) -> Result<String> {
 
 // ------------------------------------------------------------ account shortcuts
 
-/// Rewrite the `claude-<name>.cmd` launchers from the registry. Launchers of
-/// accounts that were renamed or removed are taken away; they hold no data.
-pub fn write_account_shortcuts(entries: &[(String, Option<String>)], manage: bool) -> Result<()> {
+/// Rewrite the `claude-<name>.cmd` and `codex-<name>.cmd` launchers from the registry.
+/// Launchers of accounts that were renamed or removed are taken away; they hold no data.
+pub fn write_account_shortcuts(entries: &[Shortcut], manage: bool) -> Result<()> {
     if !manage {
         return Ok(());
     }
     let dir = bin_dir();
     fs::create_dir_all(&dir)?;
-    for (alias, config_dir) in entries {
-        store::write_text(&dir.join(format!("{alias}.cmd")), &shell::cmd_shim(config_dir.as_deref()), false)?;
+    for s in entries {
+        store::write_text(&dir.join(format!("{}.cmd", s.alias)), &shell::cmd_shim(s.tool, s.config_dir.as_deref()), false)?;
     }
     for entry in fs::read_dir(&dir)?.flatten() {
         let path = entry.path();
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let current = entries.iter().any(|(alias, _)| alias.eq_ignore_ascii_case(&stem));
+        let current = entries.iter().any(|s| s.alias.eq_ignore_ascii_case(&stem));
         let ours = fs::read_to_string(&path).map(|t| t.contains(SHIM_MARK)).unwrap_or(false);
         if ours && !current {
             fs::remove_file(&path)?;

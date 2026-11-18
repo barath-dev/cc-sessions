@@ -13,6 +13,23 @@ pub use windows::*;
 
 use std::path::PathBuf;
 
+/// A running program, as the system lists it.
+#[derive(Debug, Clone)]
+pub struct Process {
+    pub pid: u32,
+    /// Its command line, program first.
+    pub args: String,
+    /// When it started, in ms since 1970, when the system says.
+    pub started_at: Option<i64>,
+}
+
+/// The folder a process runs in and the files it has open.
+#[derive(Debug, Clone, Default)]
+pub struct OpenFiles {
+    pub cwd: Option<PathBuf>,
+    pub files: Vec<PathBuf>,
+}
+
 /// What `setup` needs to know to hook the account shortcuts into a shell.
 #[derive(Debug, Clone)]
 pub struct ShellHook {

@@ -1,7 +1,8 @@
-//! The account registry and the tool's settings.
+//! The account registry and the program's settings.
 //!
-//! An account is a Claude Code config folder with a name and an alias. Removing
-//! one only sets a flag here: its folder, login and history are never touched.
+//! An account is a config folder of one tool (Claude Code's `~/.claude-work`,
+//! Codex's `~/.codex`) with a name and an alias. Removing one only sets a flag
+//! here: its folder, login and history are never touched.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -10,12 +11,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::os;
+use crate::shell::Shortcut;
 use crate::store::{self, state_file};
+use crate::tools::{self, Tool};
 use crate::util::{err, expand_tilde, home, now_iso, path_str, tilde, Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Account {
     pub name: String,
+    /// Which tool the folder belongs to; Claude Code for accounts registered before there was a choice.
+    #[serde(default)]
+    pub tool: Tool,
     pub dir: String,
     #[serde(default)]
     pub alias: Option<String>,
@@ -31,20 +37,23 @@ pub struct Account {
 }
 
 impl Account {
+    /// True for the tool's own folder, `~/.claude` or `~/.codex`.
     pub fn is_default(&self) -> bool {
-        Path::new(&self.dir) == default_dir()
+        Path::new(&self.dir) == self.tool.default_dir()
     }
 
-    /// The folder to export as `CLAUDE_CONFIG_DIR`. `None` for the default
-    /// account: setting the variable to `~/.claude` changes where Claude Code
-    /// looks for that account's login, so it must stay unset.
+    /// The folder to export as the tool's variable (`CLAUDE_CONFIG_DIR`,
+    /// `CODEX_HOME`). `None` for the default folder: setting the variable to
+    /// `~/.claude` changes where Claude Code looks for that account's login, so
+    /// it must stay unset.
     pub fn config_dir(&self) -> Option<String> {
         (!self.is_default()).then(|| self.dir.clone())
     }
-}
 
-pub fn default_dir() -> PathBuf {
-    home().join(".claude")
+    /// The shortcut that starts it, or the plain command for a default folder without one.
+    pub fn start_command(&self) -> Option<String> {
+        self.alias.clone().or_else(|| self.is_default().then(|| self.tool.program().to_string()))
+    }
 }
 
 // --------------------------------------------------------------------- settings
@@ -97,18 +106,15 @@ pub fn valid_alias(alias: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn looks_like_config_dir(path: &Path) -> bool {
-    ["projects", "sessions", ".claude.json", "settings.json"].iter().any(|child| path.join(child).exists())
-}
-
-/// `~/.claude-*` folders, sorted.
-fn dash_folders() -> Vec<PathBuf> {
+/// A tool's `~/.claude-*` or `~/.codex-*` folders, sorted.
+fn dash_folders(tool: Tool) -> Vec<PathBuf> {
+    let prefix = tool.folder_prefix();
     let mut found: Vec<PathBuf> = fs::read_dir(home())
         .map(|entries| {
             entries
                 .flatten()
                 .map(|e| e.path())
-                .filter(|p| p.is_dir() && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".claude-")))
+                .filter(|p| p.is_dir() && p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&prefix)))
                 .collect()
         })
         .unwrap_or_default();
@@ -116,51 +122,59 @@ fn dash_folders() -> Vec<PathBuf> {
     found
 }
 
-fn suffix_name(path: &Path) -> String {
+/// Every folder that holds a tool's data: its default folder and its dash folders.
+fn tool_folders(tool: Tool) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Some(tool.default_dir()).filter(|d| d.is_dir()).into_iter().collect();
+    found.extend(dash_folders(tool).into_iter().filter(|p| tool.looks_like_config_dir(p)));
+    found
+}
+
+/// The account name a folder suggests: `work` for `~/.claude-work`, `codex-work`
+/// for `~/.codex-work` (so it cannot clash with a Claude Code account).
+fn suffix_name(path: &Path, tool: Tool) -> String {
     let raw = path.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
     let cleaned: String = raw
-        .trim_start_matches(".claude-")
+        .trim_start_matches(&tool.folder_prefix())
         .chars()
         .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' { c } else { '-' })
         .collect();
-    cleaned.trim_matches('-').to_string()
+    let name = cleaned.trim_matches('-').to_string();
+    match tool {
+        Tool::Claude => name,
+        _ => format!("{}-{name}", tool.id()),
+    }
 }
 
-/// The accounts a first run would register: the folders that already exist.
+/// The account a folder of a tool would be registered as.
+fn found_account(tool: Tool, path: &Path, alias: Option<String>, stamp: &str) -> Account {
+    let is_default = path == tool.default_dir();
+    let name = if is_default { tool.default_name().to_string() } else { suffix_name(path, tool) };
+    let alias = alias.or_else(|| (!is_default).then(|| tool.alias_for(&name)));
+    Account {
+        name,
+        tool,
+        dir: path_str(path),
+        alias,
+        removed: false,
+        added_at: Some(stamp.to_string()),
+        removed_at: None,
+        color: None,
+    }
+}
+
+/// The accounts a first run would register: the folders of every tool that already exist.
 /// `known_aliases` maps a folder to an alias the person already uses for it.
 pub fn discover(known_aliases: &[(PathBuf, String)]) -> Vec<Account> {
     let stamp = now_iso();
     let alias_for = |dir: &Path| known_aliases.iter().find(|(d, _)| d == dir).map(|(_, a)| a.clone());
-    let mut accounts = Vec::new();
-    if default_dir().is_dir() {
-        accounts.push(Account {
-            name: "default".into(),
-            dir: path_str(&default_dir()),
-            alias: alias_for(&default_dir()),
-            removed: false,
-            added_at: Some(stamp.clone()),
-            removed_at: None,
-            color: None,
-        });
-    }
-    for path in dash_folders() {
-        if !looks_like_config_dir(&path) {
-            continue;
+    let mut accounts: Vec<Account> = Vec::new();
+    for tool in tools::ALL {
+        for path in tool_folders(tool) {
+            let acc = found_account(tool, &path, alias_for(&path), &stamp);
+            if valid_name(&acc.name) && !accounts.iter().any(|a| a.name == acc.name) {
+                accounts.push(acc);
+            }
         }
-        let name = suffix_name(&path);
-        if !valid_name(&name) || accounts.iter().any(|a| a.name == name) {
-            continue;
-        }
-        let alias = alias_for(&path).unwrap_or_else(|| format!("claude-{name}"));
-        accounts.push(Account {
-            name,
-            dir: path_str(&path),
-            alias: Some(alias),
-            removed: false,
-            added_at: Some(stamp.clone()),
-            removed_at: None,
-            color: None,
-        });
     }
     accounts
 }
@@ -180,20 +194,17 @@ pub fn save_all(accounts: &[Account]) -> Result<()> {
 }
 
 pub fn write_shortcuts(accounts: &[Account]) -> Result<()> {
-    let entries: Vec<(String, Option<String>)> = accounts
+    let entries: Vec<Shortcut> = accounts
         .iter()
         .filter(|a| !a.removed)
-        .filter_map(|a| a.alias.clone().map(|alias| (alias, a.config_dir())))
+        .filter_map(|a| a.alias.clone().map(|alias| Shortcut { alias, tool: a.tool, config_dir: a.config_dir() }))
         .collect();
     os::write_account_shortcuts(&entries, load_config().manage_aliases)
 }
 
 fn load_all() -> Result<Vec<Account>> {
     match store::read_json(&registry_file())? {
-        Some(data) => {
-            let list = data.get("accounts").cloned().unwrap_or(Value::Array(vec![]));
-            serde_json::from_value(list).map_err(|e| Error(format!("accounts.json is not in the expected form: {e}")))
-        }
+        Some(data) => parse_accounts(data.get("accounts").cloned().unwrap_or(Value::Array(vec![]))),
         None => {
             // First run: register the folders that already exist.
             let accounts = discover(&[]);
@@ -201,6 +212,19 @@ fn load_all() -> Result<Vec<Account>> {
             Ok(accounts)
         }
     }
+}
+
+/// An account saved without a tool is Claude Code's, unless its folder says Codex: a version
+/// from before Codex (2.7 and older) drops the tool when it saves the registry again.
+fn parse_accounts(list: Value) -> Result<Vec<Account>> {
+    let mut accounts: Vec<Account> = serde_json::from_value(list.clone()).map_err(|e| Error(format!("accounts.json is not in the expected form: {e}")))?;
+    for (acc, saved) in accounts.iter_mut().zip(list.as_array().into_iter().flatten()) {
+        let folder = Path::new(&acc.dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if saved.get("tool").is_none() && (folder == ".codex" || folder.starts_with(&Tool::Codex.folder_prefix())) {
+            acc.tool = Tool::Codex;
+        }
+    }
+    Ok(accounts)
 }
 
 pub fn load_accounts(include_removed: bool) -> Result<Vec<Account>> {
@@ -237,8 +261,8 @@ fn check_alias(alias: &str, accounts: &[Account], ignore: Option<usize>) -> Resu
     if !valid_alias(alias) {
         return err("Alias must be letters, digits, dashes or underscores, with no spaces.");
     }
-    if alias == "claude" {
-        return err("Alias cannot be 'claude': that would hide the claude command itself.");
+    if let Some(tool) = tools::ALL.into_iter().find(|t| t.program() == alias) {
+        return err(format!("Alias cannot be '{alias}': that would hide the {} command itself.", tool.program()));
     }
     for (i, acc) in accounts.iter().enumerate() {
         if Some(i) != ignore && !acc.removed && acc.alias.as_deref() == Some(alias) {
@@ -257,15 +281,15 @@ fn find(accounts: &[Account], name: &str) -> Result<usize> {
     accounts.iter().position(|a| a.name == name).ok_or_else(|| Error(format!("No account named '{name}'.")))
 }
 
-/// Register an account. Returns (account, folder_was_created).
-pub fn add_account(name: &str, alias: Option<&str>, folder: Option<&str>) -> Result<(Account, bool)> {
+/// Register an account of a tool. Returns (account, folder_was_created).
+pub fn add_account(name: &str, alias: Option<&str>, folder: Option<&str>, tool: Tool) -> Result<(Account, bool)> {
     store::locked(|| {
         let mut accounts = load_all()?;
         check_name(name, &accounts, None)?;
 
         let path = match folder.map(str::trim).filter(|f| !f.is_empty()) {
             Some(f) => expand_tilde(f),
-            None => home().join(format!(".claude-{name}")),
+            None => home().join(format!("{}{}", tool.folder_prefix(), name.strip_prefix("codex-").filter(|_| tool == Tool::Codex).unwrap_or(name))),
         };
         if !path.is_absolute() {
             return err("Folder must be an absolute path, or start with ~.");
@@ -281,11 +305,14 @@ pub fn add_account(name: &str, alias: Option<&str>, folder: Option<&str>) -> Res
             return err(format!("{} belongs to account '{}', which is {state}.", tilde(&path_str(&path)), acc.name));
         }
 
-        let is_default = path == default_dir();
+        if let Some(other) = tools::ALL.into_iter().find(|t| *t != tool && (path == t.default_dir() || is_dash_folder(&path, *t))) {
+            return err(format!("{} is a {} folder. Add it as a {} account.", tilde(&path_str(&path)), other.label(), other.label()));
+        }
+        let is_default = path == tool.default_dir();
         let alias = match alias.map(str::trim).filter(|a| !a.is_empty()) {
             Some(a) => Some(a.to_string()),
             None if is_default => None,
-            None => Some(format!("claude-{name}")),
+            None => Some(tool.alias_for(name)),
         };
         if let Some(a) = &alias {
             check_alias(a, &accounts, None)?;
@@ -297,6 +324,7 @@ pub fn add_account(name: &str, alias: Option<&str>, folder: Option<&str>) -> Res
         }
         let acc = Account {
             name: name.to_string(),
+            tool,
             dir: path_str(&path),
             alias,
             removed: false,
@@ -312,8 +340,8 @@ pub fn add_account(name: &str, alias: Option<&str>, folder: Option<&str>) -> Res
 
 /// Change an account's name and/or alias. The folder is never touched.
 ///
-/// `alias`: `None` keeps a custom alias and lets the `claude-NAME` pattern
-/// follow the name; `Some("")` clears it (default account only).
+/// `alias`: `None` keeps a custom alias and lets the `claude-NAME` (or
+/// `codex-NAME`) pattern follow the name; `Some("")` clears it (default folder only).
 pub fn rename_account(name: &str, new_name: Option<&str>, alias: Option<&str>) -> Result<Account> {
     store::locked(|| {
         let mut accounts = load_all()?;
@@ -326,8 +354,9 @@ pub fn rename_account(name: &str, new_name: Option<&str>, alias: Option<&str>) -
             check_name(&new_name, &accounts, Some(i))?;
         }
         let current = accounts[i].alias.clone();
+        let tool = accounts[i].tool;
         let new_alias = match alias.map(str::trim) {
-            None if current.as_deref() == Some(format!("claude-{name}").as_str()) => Some(format!("claude-{new_name}")),
+            None if current.as_deref() == Some(tool.alias_for(name).as_str()) => Some(tool.alias_for(&new_name)),
             None => current.clone(),
             Some("") if accounts[i].is_default() => None,
             Some("") => return err("This account needs an alias, otherwise it cannot be started."),
@@ -399,22 +428,51 @@ pub fn restore_account(name: &str, alias: Option<&str>) -> Result<Account> {
     })
 }
 
-/// `~/.claude-*` folders the registry has never seen.
-pub fn unregistered_folders() -> Result<Vec<String>> {
+fn is_dash_folder(path: &Path, tool: Tool) -> bool {
+    path.parent() == Some(home().as_path()) && path.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&tool.folder_prefix()))
+}
+
+/// A folder of a tool that the registry has never seen.
+#[derive(Debug, Clone, Serialize)]
+pub struct Unregistered {
+    pub dir: String,
+    pub tool: Tool,
+    /// The account name it would get.
+    pub name: String,
+}
+
+/// Folders of every tool that the registry has never seen: `~/.claude-*`, and
+/// `~/.codex` and `~/.codex-*` (which a registry from before Codex never looked for).
+pub fn unregistered_folders() -> Result<Vec<Unregistered>> {
     let known: Vec<PathBuf> = load_accounts(true)?.iter().map(|a| PathBuf::from(&a.dir)).collect();
-    Ok(dash_folders().into_iter().filter(|p| !known.contains(p)).map(|p| path_str(&p)).collect())
+    let mut found = Vec::new();
+    for tool in tools::ALL {
+        let mut folders = if tool == Tool::Claude { dash_folders(tool) } else { tool_folders(tool) };
+        folders.retain(|p| !known.contains(p));
+        for path in folders {
+            let name = if path == tool.default_dir() { tool.default_name().to_string() } else { suffix_name(&path, tool) };
+            found.push(Unregistered { dir: path_str(&path), tool, name });
+        }
+    }
+    Ok(found)
 }
 
 pub const DEFAULT_RETENTION_DAYS: i64 = 30;
 
-/// How long Claude Code itself keeps this account's conversations (its
-/// `cleanupPeriodDays`). Reported only; this tool never changes settings.
-pub fn retention_days(acc: &Account) -> i64 {
-    store::read_json_or_null(&Path::new(&acc.dir).join("settings.json"))
-        .get("cleanupPeriodDays")
-        .and_then(Value::as_i64)
-        .filter(|days| *days > 0)
-        .unwrap_or(DEFAULT_RETENTION_DAYS)
+/// How long the tool itself keeps this account's conversations: Claude Code's
+/// `cleanupPeriodDays`. `None` when it keeps them until they are deleted by hand,
+/// as Codex does. Reported only; this program never changes settings.
+pub fn retention_days(acc: &Account) -> Option<i64> {
+    match acc.tool {
+        Tool::Claude => Some(
+            store::read_json_or_null(&Path::new(&acc.dir).join("settings.json"))
+                .get("cleanupPeriodDays")
+                .and_then(Value::as_i64)
+                .filter(|days| *days > 0)
+                .unwrap_or(DEFAULT_RETENTION_DAYS),
+        ),
+        Tool::Codex => None,
+    }
 }
 
 #[cfg(test)]
@@ -437,7 +495,26 @@ mod tests {
 
     #[test]
     fn names_come_from_folder_suffixes() {
-        assert_eq!(suffix_name(Path::new("/home/me/.claude-work")), "work");
-        assert_eq!(suffix_name(Path::new("/home/me/.claude-My Team")), "my-team");
+        assert_eq!(suffix_name(Path::new("/home/me/.claude-work"), Tool::Claude), "work");
+        assert_eq!(suffix_name(Path::new("/home/me/.claude-My Team"), Tool::Claude), "my-team");
+        assert_eq!(suffix_name(Path::new("/home/me/.codex-work"), Tool::Codex), "codex-work");
+    }
+
+    #[test]
+    fn registries_from_before_codex_are_claude_code() {
+        let acc: Account = serde_json::from_value(serde_json::json!({ "name": "work", "dir": "/h/.claude-work" })).unwrap();
+        assert_eq!(acc.tool, Tool::Claude);
+        let acc: Account = serde_json::from_value(serde_json::json!({ "name": "codex", "tool": "codex", "dir": "/h/.codex" })).unwrap();
+        assert_eq!(acc.tool, Tool::Codex);
+        // Saved again by 2.7, which drops the tool: the folder still tells.
+        let saved = parse_accounts(serde_json::json!([
+            { "name": "work", "dir": "/h/.claude-work" },
+            { "name": "codex", "dir": "/h/.codex" },
+            { "name": "codex-work", "dir": "/h/.codex-work" },
+            { "name": "odd", "tool": "claude", "dir": "/h/.codex-odd" },
+        ]))
+        .unwrap();
+        let tools: Vec<Tool> = saved.iter().map(|a| a.tool).collect();
+        assert_eq!(tools, [Tool::Claude, Tool::Codex, Tool::Codex, Tool::Claude]);
     }
 }

@@ -1,5 +1,5 @@
-//! Every saved conversation, read from the transcripts Claude Code keeps.
-//! Transcripts are only ever opened for reading.
+//! Every saved conversation, read from the transcripts each tool keeps: Claude
+//! Code's here, Codex's rollouts in `codex`. Transcripts are only ever opened for reading.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
@@ -12,10 +12,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::accounts;
+use crate::codex;
 use crate::loops::{Gatherer, Work};
 use crate::pins::Pins;
 use crate::store::{self, state_file};
 use crate::titles::Titles;
+use crate::tools::Tool;
 use crate::util::{iso_to_ms, path_str, squash, Error, Result};
 
 const PREVIEW_CHARS: usize = 300;
@@ -78,6 +80,13 @@ pub struct Entry {
     pub models: BTreeMap<String, Tokens>,
     /// What was done, for spotting sessions going round in circles.
     pub work: Work,
+    /// When the conversation was last worked in, when the transcript says and its
+    /// file's time may not (Codex rewrites old rollouts when it compresses them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_at: Option<i64>,
+    /// Part of another conversation rather than one of its own: a sub-agent's, say.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unreadable: bool,
 }
@@ -95,6 +104,7 @@ struct Cached {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
     pub account: String,
+    pub tool: Tool,
     pub account_dir: String,
     pub id: String,
     pub session_id: String,
@@ -233,14 +243,38 @@ fn note_usage(entry: &mut Entry, rec: &Value) {
     if used == Tokens::default() {
         return;
     }
-    entry.tokens.add(&used);
-    entry.models.entry(model.to_string()).or_default().add(&used);
-    if let Some(at) = rec.get("timestamp").and_then(Value::as_str).and_then(iso_to_ms) {
+    let at = rec.get("timestamp").and_then(Value::as_str).and_then(iso_to_ms);
+    note_tokens(entry, model, &used, at);
+}
+
+/// Add one reply's tokens: to the whole, to its model and to the hour it was used in.
+pub fn note_tokens(entry: &mut Entry, model: &str, used: &Tokens, at: Option<i64>) {
+    entry.tokens.add(used);
+    entry.models.entry(model.to_string()).or_default().add(used);
+    if let Some(at) = at {
         let hour = at.div_euclid(3_600_000);
         match entry.hours.last_mut() {
-            Some((last, tokens)) if *last == hour => tokens.add(&used),
-            _ => entry.hours.push((hour, used)),
+            Some((last, tokens)) if *last == hour => tokens.add(used),
+            _ => entry.hours.push((hour, *used)),
         }
+    }
+}
+
+/// Note one prompt the person typed. `typed` keeps what is searched: how a long
+/// conversation began and where it got to.
+pub fn note_prompt(entry: &mut Entry, typed: &mut Vec<String>, prompt: &str) {
+    let prompt = truncate(prompt, PREVIEW_CHARS);
+    entry.prompts += 1;
+    if entry.first_prompt.is_none() {
+        entry.first_prompt = Some(prompt.clone());
+    }
+    typed.push(prompt.clone());
+    if typed.len() > 2 * SEARCH_PROMPTS {
+        typed.remove(SEARCH_PROMPTS);
+    }
+    entry.last_prompts.push(prompt);
+    if entry.last_prompts.len() > 3 {
+        entry.last_prompts.remove(0);
     }
 }
 
@@ -347,20 +381,7 @@ fn index_transcript(path: &Path) -> Entry {
             }
             if let Some(prompt) = prompt_text(&rec) {
                 work.prompt(&prompt);
-                let prompt = truncate(&prompt, PREVIEW_CHARS);
-                entry.prompts += 1;
-                if entry.first_prompt.is_none() {
-                    entry.first_prompt = Some(prompt.clone());
-                }
-                typed.push(prompt.clone());
-                // A long conversation is searched by how it began and where it got to.
-                if typed.len() > 2 * SEARCH_PROMPTS {
-                    typed.remove(SEARCH_PROMPTS);
-                }
-                entry.last_prompts.push(prompt);
-                if entry.last_prompts.len() > 3 {
-                    entry.last_prompts.remove(0);
-                }
+                note_prompt(&mut entry, &mut typed, &prompt);
             }
         }
     }
@@ -391,7 +412,11 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
     let mut changed = false;
 
     for acc in &accounts {
-        for path in transcripts(Path::new(&acc.dir)) {
+        let (paths, names) = match acc.tool {
+            Tool::Claude => (transcripts(Path::new(&acc.dir)), Default::default()),
+            Tool::Codex => (codex::transcripts(Path::new(&acc.dir)), codex::thread_names(Path::new(&acc.dir))),
+        };
+        for path in paths {
             let Ok(meta) = fs::metadata(&path) else { continue };
             let mtime = meta
                 .modified()
@@ -404,24 +429,35 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 Some(hit) if hit.v == CACHE_VERSION && hit.size == meta.len() && hit.mtime == mtime => hit.entry.clone(),
                 _ => {
                     changed = true;
-                    index_transcript(&path)
+                    match acc.tool {
+                        Tool::Claude => index_transcript(&path),
+                        Tool::Codex => codex::index_rollout(&path),
+                    }
                 }
             };
             let folder = path.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let key_entry = (key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry: entry.clone() });
+            fresh.insert(key_entry.0, key_entry.1);
+            if entry.hidden {
+                continue;
+            }
             let given = titles.get(&acc.dir, &entry.session_id);
+            // The name Codex has for it, which it keeps apart from the conversation.
+            let own = names.get(&entry.session_id).cloned().or(entry.title.clone());
             items.push(HistoryItem {
                 account: acc.name.clone(),
+                tool: acc.tool,
                 account_dir: acc.dir.clone(),
-                id: entry.session_id.chars().take(8).collect(),
+                id: acc.tool.short_id(&entry.session_id),
                 session_id: entry.session_id.clone(),
-                title: given.map(String::from).or(entry.title.clone()).unwrap_or_else(|| format!("(no title) {file_name}")),
+                title: given.map(String::from).or(own).unwrap_or_else(|| format!("(no title) {file_name}")),
                 renamed: given.is_some(),
                 pinned: pins.has_session(&acc.dir, &entry.session_id),
                 cwd: entry.cwd.clone().unwrap_or_default(),
                 folder_label: entry.cwd.clone().unwrap_or(folder),
                 started_at: entry.started_at,
-                last_activity: (mtime / 1_000_000) as i64,
+                last_activity: entry.last_at.unwrap_or((mtime / 1_000_000) as i64),
                 prompts: entry.prompts,
                 first_prompt: entry.first_prompt.clone(),
                 last_prompts: entry.last_prompts.clone(),
@@ -430,9 +466,8 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 tokens: entry.tokens,
                 hours: entry.hours.clone(),
                 models: entry.models.clone(),
-                work: entry.work.clone(),
+                work: entry.work,
             });
-            fresh.insert(key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry });
         }
     }
     if changed || !fresh.keys().eq(cache.keys()) {

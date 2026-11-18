@@ -93,7 +93,7 @@ impl Gatherer {
         self.events.push(Event::Reply);
     }
 
-    /// A model's reply: note the commands it ran and the edits it made.
+    /// A Claude Code reply: note the commands it ran and the edits it made.
     pub fn assistant(&mut self, rec: &Value) {
         let Some(blocks) = rec.pointer("/message/content").and_then(Value::as_array) else { return };
         for block in blocks.iter().filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use")) {
@@ -103,35 +103,56 @@ impl Gatherer {
             match name {
                 "Bash" => {
                     if let Some(id) = block.get("id").and_then(Value::as_str) {
-                        self.commands.insert(id.to_string());
+                        self.command(id);
                     }
                 }
-                "Edit" | "MultiEdit" | "Write" => {
-                    let file = text(&input, "file_path");
-                    // Plans, memory and settings are Claude Code's own notes, not the project.
-                    if file.is_empty() || file.contains("/.claude") || file.contains("\\.claude") {
-                        continue;
-                    }
-                    let (written, undone_lines) = if name == "Write" {
-                        self.write(&file, &text(&input, "content"))
-                    } else {
-                        let pairs: Vec<(String, String)> = if name == "Edit" {
-                            vec![(text(&input, "old_string"), text(&input, "new_string"))]
-                        } else {
-                            input.get("edits").and_then(Value::as_array).into_iter().flatten().map(|e| (text(e, "old_string"), text(e, "new_string"))).collect()
-                        };
-                        pairs.iter().fold((0, 0), |(w, u), (old, new)| {
-                            let (dw, du) = self.edit(&file, old, new);
-                            (w + dw, u + du)
-                        })
-                    };
-                    self.work.edits += 1;
-                    *self.edits_by_file.entry(file).or_default() += 1;
-                    self.events.push(Event::Edit { written, undone_lines });
+                "Write" => self.wrote(&text(&input, "file_path"), &text(&input, "content")),
+                "Edit" => self.edited(&text(&input, "file_path"), &[(text(&input, "old_string"), text(&input, "new_string"))]),
+                "MultiEdit" => {
+                    let pairs: Vec<(String, String)> =
+                        input.get("edits").and_then(Value::as_array).into_iter().flatten().map(|e| (text(e, "old_string"), text(e, "new_string"))).collect();
+                    self.edited(&text(&input, "file_path"), &pairs);
                 }
                 _ => {}
             }
         }
+    }
+
+    /// A tool call that ran a command; its failure is reported to `failed` by the same id.
+    pub fn command(&mut self, id: &str) {
+        self.commands.insert(id.to_string());
+    }
+
+    /// The tool's own notes (plans, memory, settings) are not the project.
+    fn own_notes(file: &str) -> bool {
+        [".claude", ".codex"].iter().any(|dir| file.contains(&format!("/{dir}")) || file.contains(&format!("\\{dir}")))
+    }
+
+    /// An edit to a file: each pair is text taken out and the text put in its place.
+    pub fn edited(&mut self, file: &str, pairs: &[(String, String)]) {
+        if file.is_empty() || Self::own_notes(file) {
+            return;
+        }
+        let (written, undone_lines) = pairs.iter().fold((0, 0), |(w, u), (old, new)| {
+            let (dw, du) = self.edit(file, old, new);
+            (w + dw, u + du)
+        });
+        self.count_edit(file, written, undone_lines);
+    }
+
+    /// A file written whole.
+    pub fn wrote(&mut self, file: &str, content: &str) {
+        if file.is_empty() || Self::own_notes(file) {
+            return;
+        }
+        let (written, undone_lines) = self.write(file, content);
+        self.count_edit(file, written, undone_lines);
+    }
+
+    fn count_edit(&mut self, file: &str, written: u32, undone_lines: u32) {
+        self.work.edits += 1;
+        *self.edits_by_file.entry(file.to_string()).or_default() += 1;
+        self.events.push(Event::Edit { written, undone_lines });
     }
 
     fn edit(&mut self, file: &str, old: &str, new: &str) -> (u32, u32) {
@@ -176,31 +197,38 @@ impl Gatherer {
         (count, undone_lines)
     }
 
-    /// A record with tool results: note failures of commands that ran code.
+    /// A Claude Code record with tool results: note failures of commands that ran code.
     pub fn results(&mut self, rec: &Value) {
         let Some(blocks) = rec.pointer("/message/content").and_then(Value::as_array) else { return };
         for block in blocks {
-            let is_error = block.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-            let id = block.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
-            if !is_error || !self.commands.contains(id) {
+            if !block.get("is_error").and_then(Value::as_bool).unwrap_or(false) {
                 continue;
             }
+            let id = block.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
             let text = match block.get("content") {
                 Some(Value::String(s)) => s.clone(),
                 Some(Value::Array(parts)) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
                 _ => String::new(),
             };
-            let Some(error) = code_error(&text) else { continue };
-            if let Some(line) = error_line(&text) {
-                self.as_written.insert(error.clone(), shorten(line.trim(), 110));
-            }
-            let edits = self.work.edits;
-            if self.last_seen.get(&error).is_some_and(|at| edits > *at) {
-                *self.came_back.entry(error.clone()).or_default() += 1;
-            }
-            self.last_seen.insert(error, edits);
-            self.events.push(Event::Error);
+            self.failed(id, &text);
         }
+    }
+
+    /// The command with this id failed, with this output. Only errors from running code count.
+    pub fn failed(&mut self, id: &str, text: &str) {
+        if !self.commands.contains(id) {
+            return;
+        }
+        let Some(error) = code_error(text) else { return };
+        if let Some(line) = error_line(text) {
+            self.as_written.insert(error.clone(), shorten(line.trim(), 110));
+        }
+        let edits = self.work.edits;
+        if self.last_seen.get(&error).is_some_and(|at| edits > *at) {
+            *self.came_back.entry(error.clone()).or_default() += 1;
+        }
+        self.last_seen.insert(error, edits);
+        self.events.push(Event::Error);
     }
 
     /// Something the person typed. "Still not working" after edits is the plainest sign of a loop.

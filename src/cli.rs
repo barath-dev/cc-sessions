@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::accounts::{self, Account};
-use crate::claude;
 use crate::closing;
 use crate::history;
 use crate::os;
@@ -18,11 +17,12 @@ use crate::server::{self, HOST, VERSION};
 use crate::sessions::{self, Session};
 use crate::setup;
 use crate::titles;
+use crate::tools::{self, Tool};
 use crate::update;
 use crate::util::{age, err, ms_to_date, path_str, tilde, Error, Result};
 
 const HELP: &str = "\
-cc-sessions: see, close and resume Claude Code sessions across every account.
+cc-sessions: see, close and resume Claude Code and Codex sessions across every account.
 
   cc-sessions                      start the web app if needed and open it
   cc-sessions stop                 stop the web app (same as Disconnect in the page)
@@ -36,21 +36,22 @@ cc-sessions: see, close and resume Claude Code sessions across every account.
   cc-sessions rename <id> NEW NAME | --reset
 
   cc-sessions account list [--removed]
-  cc-sessions account add NAME [--alias A] [--dir PATH] [--no-login]
+  cc-sessions account add NAME [--tool claude|codex] [--alias A] [--dir PATH] [--no-login]
   cc-sessions account rename NAME NEW-NAME [--alias A]
   cc-sessions account login NAME
   cc-sessions account remove NAME [--yes]
   cc-sessions account restore NAME [--alias A]
 
+An account is one Claude Code or Codex folder (~/.claude, ~/.codex-work, ...).
 Session ids are shown as account:id. Closing stops a session and keeps its
-conversation. A new name is kept by cc-sessions; Claude Code keeps its own
+conversation. A new name is kept by cc-sessions; the tool keeps its own
 title. Nothing under an account folder is ever deleted or changed.
 
 Options: --no-open (start without opening the browser), --version, --help
 ";
 
 /// Flags that take a value; every other `--flag` is a switch.
-const VALUE_FLAGS: &[&str] = &["folder", "account", "alias", "dir", "command", "port"];
+const VALUE_FLAGS: &[&str] = &["folder", "account", "alias", "dir", "command", "port", "tool"];
 const SWITCHES: &[&str] = &[
     "json", "open", "closed", "all", "yes", "no-login", "removed", "no-open", "shortcut", "no-shortcut", "no-import",
     "no-aliases", "help", "version", "by-date", "reset", "check", "no-auto-update",
@@ -351,7 +352,7 @@ fn cmd_stop() -> Result<i32> {
     if os::pid_alive(pid) {
         return err(format!("The server (pid {pid}) has not stopped yet."));
     }
-    println!("Claude Sessions stopped. Your Claude sessions are untouched.");
+    println!("Claude Sessions stopped. Your Claude Code and Codex sessions are untouched.");
     Ok(0)
 }
 
@@ -385,7 +386,7 @@ fn cmd_list(args: &Args) -> Result<i32> {
         println!("{}", tilde(&folder));
         let rows: Vec<Vec<String>> = group
             .iter()
-            .map(|s| vec![s.key.clone(), s.kind.clone(), s.status.clone(), age(s.updated_at), s.name.clone()])
+            .map(|s| vec![s.key.clone(), s.tool.id().to_string(), s.kind.clone(), s.status.clone(), age(s.updated_at), s.name.clone()])
             .collect();
         table(&rows, "  ");
     }
@@ -440,7 +441,7 @@ fn cmd_rename(args: &Args) -> Result<i32> {
     let token = args.word(1, "the session id")?;
     let title = args.words[2..].join(" ");
     if title.trim().is_empty() != args.has("reset") {
-        return err("Give the new name, or --reset to go back to Claude Code's own title.");
+        return err("Give the new name, or --reset to go back to the tool's own title.");
     }
     let (account, ident) = match token.rsplit_once(':') {
         Some((account, ident)) => (Some(account), ident.to_lowercase()),
@@ -454,7 +455,9 @@ fn cmd_rename(args: &Args) -> Result<i32> {
         .map(|s| (s.account.clone(), s.account_dir.clone(), s.session_id.clone()))
         .collect();
     for item in history::history_items()? {
-        let matches = account.is_none_or(|a| a == item.account) && !ident.is_empty() && item.session_id.to_lowercase().starts_with(&ident);
+        let matches = account.is_none_or(|a| a == item.account)
+            && !ident.is_empty()
+            && (item.id.to_lowercase() == ident || item.session_id.to_lowercase().starts_with(&ident));
         let entry = (item.account, item.account_dir, item.session_id);
         if matches && !found.contains(&entry) {
             found.push(entry);
@@ -465,8 +468,8 @@ fn cmd_rename(args: &Args) -> Result<i32> {
         [(account, dir, session_id)] => {
             let short: String = session_id.chars().take(8).collect();
             match titles::set(dir, session_id, &title)? {
-                Some(title) => println!("Renamed {account}:{short} to \"{title}\". Claude Code keeps its own title."),
-                None => println!("{account}:{short} goes by Claude Code's title again."),
+                Some(title) => println!("Renamed {account}:{short} to \"{title}\". The tool keeps its own title."),
+                None => println!("{account}:{short} goes by the tool's own title again."),
             }
             Ok(0)
         }
@@ -528,11 +531,12 @@ fn cmd_close(args: &Args) -> Result<i32> {
     }
 
     // Never close the session this command was run from.
-    let own_id = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+    // Codex runs a session's commands in its background service, not under the window: they carry its id.
+    let own_ids: Vec<String> = ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].iter().filter_map(|v| std::env::var(v).ok()).filter(|id| !id.is_empty()).collect();
     let parents = ancestors();
     let mut kept = Vec::new();
     for sess in targets {
-        if (!own_id.is_empty() && sess.session_id == own_id) || sess.pid.is_some_and(|pid| parents.contains(&pid)) {
+        if own_ids.contains(&sess.session_id) || sess.pid.is_some_and(|pid| parents.contains(&pid)) {
             println!("Skipped {} ({}): this command is running inside it.", sess.key, sess.name);
         } else if !sess.open {
             println!("Skipped {} ({}): already closed.", sess.key, sess.name);
@@ -545,7 +549,8 @@ fn cmd_close(args: &Args) -> Result<i32> {
         return Ok(failed as i32);
     }
 
-    let (background, interactive): (Vec<&Session>, Vec<&Session>) = kept.into_iter().partition(|s| s.is_background());
+    // A Codex turn whose window was closed has no terminal to ask about.
+    let (background, interactive): (Vec<&Session>, Vec<&Session>) = kept.into_iter().partition(|s| s.is_background() || s.pid.is_none());
     let mut chosen = Vec::new();
     if !background.is_empty() {
         println!("Background sessions to close ({}):", background.len());
@@ -573,9 +578,9 @@ fn cmd_close(args: &Args) -> Result<i32> {
 
 // --------------------------------------------------------------------- accounts
 
-/// Run claude for an account in this terminal, so sign-in prompts work.
-fn claude_here(acc: &Account, args: &[&str]) -> Result<()> {
-    claude::command(acc)?.args(args).status()?;
+/// Run the account's tool in this terminal, so sign-in prompts work.
+fn tool_here(acc: &Account, args: &[String]) -> Result<()> {
+    tools::command(acc)?.args(args).status()?;
     Ok(())
 }
 
@@ -584,7 +589,7 @@ fn alias_note() {
 }
 
 fn shown_alias(acc: &Account) -> String {
-    acc.alias.clone().unwrap_or_else(|| if acc.is_default() { "claude".into() } else { "-".into() })
+    acc.start_command().unwrap_or_else(|| "-".into())
 }
 
 fn account_list(args: &Args) -> Result<i32> {
@@ -600,23 +605,25 @@ fn account_list(args: &Args) -> Result<i32> {
         return Ok(0);
     }
     if removed {
-        let mut rows = vec![vec!["NAME".to_string(), "ALIAS".into(), "FOLDER".into()]];
-        rows.extend(accounts.iter().map(|a| vec![a.name.clone(), a.alias.clone().unwrap_or("-".into()), tilde(&a.dir)]));
+        let mut rows = vec![vec!["NAME".to_string(), "TOOL".into(), "ALIAS".into(), "FOLDER".into()]];
+        rows.extend(accounts.iter().map(|a| vec![a.name.clone(), a.tool.label().into(), a.alias.clone().unwrap_or("-".into()), tilde(&a.dir)]));
         table(&rows, "");
         println!("Their folders and logins are untouched. Bring one back with: {} account restore NAME", me());
         return Ok(0);
     }
-    let infos: Vec<claude::AuthInfo> = thread::scope(|scope| {
-        let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || claude::auth_status(acc))).collect();
+    let infos: Vec<tools::AuthInfo> = thread::scope(|scope| {
+        let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || tools::auth_status(acc))).collect();
         handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
     });
     let (sessions, _) = sessions::all_sessions(&accounts)?;
-    let mut rows = vec![["NAME", "ALIAS", "LOGIN", "ORG", "PLAN", "OPEN", "FOLDER"].map(String::from).to_vec()];
+    let mut rows = vec![["NAME", "TOOL", "ALIAS", "LOGIN", "ORG", "PLAN", "OPEN", "FOLDER"].map(String::from).to_vec()];
     for (acc, info) in accounts.iter().zip(infos) {
+        let login = if info.logged_in { info.email.unwrap_or_else(|| "logged in".into()) } else { "not logged in".into() };
         rows.push(vec![
             acc.name.clone(),
+            acc.tool.label().into(),
             shown_alias(acc),
-            info.email.unwrap_or_else(|| "not logged in".into()),
+            login,
             info.org.unwrap_or_else(|| "-".into()),
             info.plan.unwrap_or_else(|| "-".into()),
             sessions.iter().filter(|s| s.open && s.account == acc.name).count().to_string(),
@@ -627,22 +634,35 @@ fn account_list(args: &Args) -> Result<i32> {
     let extra = accounts::unregistered_folders()?;
     if !extra.is_empty() {
         println!("\nFolders not registered as accounts:");
-        for path in extra {
-            println!("  {0}   (add with: {1} account add NAME --dir {0})", tilde(&path), me());
+        for found in extra {
+            let dir = tilde(&found.dir);
+            println!("  {dir}   (add with: {} account add {} --tool {} --dir {dir})", me(), found.name, found.tool.id());
         }
     }
     Ok(0)
 }
 
-fn account_add(args: &Args) -> Result<i32> {
-    let (acc, created) = accounts::add_account(args.word(2, "the account name")?, args.value("alias"), args.value("dir"))?;
-    let how = if created { "created" } else { "already existed and was adopted as is" };
-    println!("Added account '{}': folder {} {how}, alias {}.", acc.name, tilde(&acc.dir), shown_alias(&acc));
-    if !args.has("no-login") && !claude::auth_status(&acc).logged_in {
-        println!("Signing in...");
-        claude_here(&acc, &["auth", "login"])?;
+fn login_line(info: &tools::AuthInfo) -> String {
+    match (&info.email, info.logged_in) {
+        (Some(email), true) => email.clone(),
+        (None, true) => info.plan.clone().map_or("logged in".into(), |plan| format!("logged in ({plan})")),
+        _ => "not logged in".into(),
     }
-    println!("Login: {}", claude::auth_status(&acc).email.unwrap_or_else(|| "not logged in".into()));
+}
+
+fn account_add(args: &Args) -> Result<i32> {
+    let tool = match args.value("tool") {
+        None => Tool::Claude,
+        Some(id) => Tool::from_id(id).ok_or_else(|| Error(format!("--tool is claude or codex, not '{id}'.")))?,
+    };
+    let (acc, created) = accounts::add_account(args.word(2, "the account name")?, args.value("alias"), args.value("dir"), tool)?;
+    let how = if created { "created" } else { "already existed and was adopted as is" };
+    println!("Added {} account '{}': folder {} {how}, alias {}.", tool.label(), acc.name, tilde(&acc.dir), shown_alias(&acc));
+    if !args.has("no-login") && !tools::auth_status(&acc).logged_in {
+        println!("Signing in...");
+        tool_here(&acc, &tool.login_args())?;
+    }
+    println!("Login: {}", login_line(&tools::auth_status(&acc)));
     alias_note();
     Ok(0)
 }
@@ -656,10 +676,10 @@ fn account_rename(args: &Args) -> Result<i32> {
 
 fn account_login(args: &Args) -> Result<i32> {
     let acc = accounts::get_account(args.word(2, "the account name")?)?;
-    let info = claude::auth_status(&acc);
+    let info = tools::auth_status(&acc);
     if info.logged_in {
         let (sessions, _) = sessions::all_sessions(std::slice::from_ref(&acc))?;
-        println!("'{}' is logged in as {}.", acc.name, info.email.unwrap_or_default());
+        println!("'{}' is {}.", acc.name, info.email.map_or("logged in".into(), |e| format!("logged in as {e}")));
         let live: Vec<&Session> = sessions.iter().filter(|s| s.live).collect();
         if !live.is_empty() {
             println!("These running sessions will lose their login:");
@@ -670,11 +690,11 @@ fn account_login(args: &Args) -> Result<i32> {
         if !confirm("Log out and sign in again? History and settings are kept.") {
             return Ok(1);
         }
-        claude_here(&acc, &["auth", "logout"])?;
+        tool_here(&acc, &acc.tool.logout_args())?;
     }
-    claude_here(&acc, &["auth", "login"])?;
-    let info = claude::auth_status(&acc);
-    println!("Login: {}", info.email.clone().unwrap_or_else(|| "not logged in".into()));
+    tool_here(&acc, &acc.tool.login_args())?;
+    let info = tools::auth_status(&acc);
+    println!("Login: {}", login_line(&info));
     Ok(!info.logged_in as i32)
 }
 

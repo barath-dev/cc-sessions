@@ -5,6 +5,8 @@
 //!   auth status           prints <config>/fake-auth.json (or logged out)
 //!   stop <id>             ends the pid that fake-agents.json lists for <id>
 //!   sleep                 stays alive, to play a running session
+//!   hold <file>           stays alive with <file> open, to play a running Codex session
+//!                         (the tests copy this program in as `codex`)
 //! Every call is appended to $FAKE_CLAUDE_LOG with whether CLAUDE_CONFIG_DIR was set.
 
 use std::fs;
@@ -35,6 +37,10 @@ fn main() {
 
     match words.as_slice() {
         ["sleep"] => std::thread::sleep(std::time::Duration::from_secs(120)),
+        ["hold", file] => {
+            let _open = fs::OpenOptions::new().append(true).open(file);
+            std::thread::sleep(std::time::Duration::from_secs(120));
+        }
         // The demo recording asks for longer, so its stand-in sessions outlast the tour.
         ["sleep", seconds] => std::thread::sleep(std::time::Duration::from_secs(seconds.parse().unwrap_or(120))),
         // The update tests use this program as a "new version" that says it is cc-sessions.

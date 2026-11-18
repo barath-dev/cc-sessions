@@ -197,7 +197,8 @@ impl Machine {
         }
         let mut files = BTreeMap::new();
         for entry in fs::read_dir(&self.home).into_iter().flatten().flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".claude") {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".claude") || name.starts_with(".codex") {
                 walk(&entry.path(), &mut files);
             }
         }
@@ -471,6 +472,84 @@ fn history_lists_saved_conversations() {
 
     let by_date = text(&m.run(&["history", "--by-date"]));
     assert!(by_date.contains("1 artifact") && by_date.contains("/work/app") && by_date.contains("Login bug fix"), "{by_date}");
+}
+
+#[test]
+fn codex_sessions_beside_claude_code() {
+    let mut m = Machine::new("codex", 47820);
+    let codex = m.home.join(".codex");
+    let day = codex.join("sessions").join("2026").join("11").join("17");
+    fs::create_dir_all(&day).unwrap();
+    let project = m.root.join("app");
+    fs::create_dir_all(&project).unwrap();
+    let id = "01a1f000-1234-7abc-8def-0123456789ab";
+    let rollout = day.join(format!("rollout-2026-11-17T10-00-00-{id}.jsonl"));
+    let lines = [
+        json!({"timestamp": "2026-11-17T09:00:00.000Z", "type": "session_meta", "payload": {"id": id, "cwd": project, "timestamp": "2026-11-17T09:00:00.000Z"}}),
+        json!({"timestamp": "2026-11-17T09:00:01.000Z", "type": "turn_context", "payload": {"cwd": project, "model": "gpt-6"}}),
+        json!({"timestamp": "2026-11-17T09:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "make the tests pass"}]}}),
+        json!({"timestamp": "2026-11-17T09:00:02.000Z", "type": "event_msg", "payload": {"type": "task_started"}}),
+        json!({"timestamp": "2026-11-17T09:00:09.000Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 1000, "cached_input_tokens": 600, "output_tokens": 50}}}}),
+    ];
+    fs::write(&rollout, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    fs::write(codex.join("session_index.jsonl"), json!({"id": id, "thread_name": "Make the tests pass"}).to_string() + "\n").unwrap();
+    // {"email":"me@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}, as Codex keeps it.
+    let claims = "eyJlbWFpbCI6Im1lQGV4YW1wbGUuY29tIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfcGxhbl90eXBlIjoicGx1cyJ9fQ";
+    fs::write(codex.join("auth.json"), json!({"auth_mode": "chatgpt", "tokens": {"id_token": format!("x.{claims}.sig")}}).to_string()).unwrap();
+    m.seal();
+
+    // A first run registers ~/.codex beside the Claude Code folders.
+    let accounts = text(&m.run(&["account", "list"]));
+    assert!(accounts.contains("codex") && accounts.contains("Codex") && accounts.contains("me@example.com"), "{accounts}");
+    assert!(accounts.contains("default") && accounts.contains("work"), "{accounts}");
+
+    let items = m.json(&["history", "--json"]);
+    let item = items.as_array().unwrap().iter().find(|i| i["account"] == "codex").expect("the Codex conversation is listed");
+    assert_eq!(item["tool"], "codex");
+    assert_eq!(item["title"], "Make the tests pass");
+    assert_eq!(item["id"], "456789ab", "short ids come from the random end of Codex's ids");
+    assert_eq!(item["prompts"], 1);
+    assert_eq!(item["tokens"]["cacheRead"], 600);
+
+    // A running Codex session is found by the conversation it holds open, and can be closed.
+    if cfg!(unix) {
+        let program = m.root.join("bin").join("codex");
+        fs::copy(FAKE_CLAUDE, &program).unwrap();
+        let mut holder = Command::new(&program).arg("hold").arg(&rollout).current_dir(&project).stdin(Stdio::null()).spawn().unwrap();
+        let pid = holder.id();
+        // Waited on as a shell would, so once it exits it is gone rather than left a zombie.
+        let ended = Arc::new(AtomicBool::new(false));
+        let reaper = {
+            let ended = ended.clone();
+            thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while holder.try_wait().unwrap().is_none() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                let _ = holder.kill();
+                let _ = holder.wait();
+                ended.store(true, Ordering::SeqCst);
+            })
+        };
+        // A program copied a moment ago can take a while to start (macOS checks it first).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut listed = m.json(&["list", "--json"]);
+        while listed.as_array().is_some_and(|l| l.is_empty()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(200));
+            listed = m.json(&["list", "--json"]);
+        }
+        let sess = find(&listed, "456789ab");
+        assert_eq!((sess["tool"].as_str(), sess["status"].as_str()), (Some("codex"), Some("working")), "{sess}");
+        assert_eq!(sess["name"], "Make the tests pass");
+        assert_eq!(sess["pid"], pid);
+        assert!(sess["resumeCommand"].as_str().unwrap().ends_with(&format!("codex resume {id}")), "{sess}");
+
+        let closed = m.run_answering(&["close", "codex:456789ab"], "y\n");
+        assert!(closed.status.success(), "{}", text(&closed));
+        reaper.join().unwrap();
+        assert!(ended.load(Ordering::SeqCst), "{}", text(&closed));
+        assert_eq!(find(&m.json(&["list", "--closed", "--json"]), "456789ab")["status"], "closed");
+    }
 }
 
 #[test]

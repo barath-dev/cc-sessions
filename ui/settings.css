@@ -248,6 +248,8 @@
 .st-form p { margin: 0; }
 .st-field { display: flex; flex-direction: column; gap: 0.25rem; }
 .st-field-label { font-weight: 500; }
+.st-field select { align-self: flex-start; padding: 0.38rem 0.6rem; border: 1px solid var(--line); border-radius: 7px; background: var(--st-bg); color: var(--ink); font: inherit; }
+.st-field select:disabled { opacity: 0.7; }
 .st-field input[type="text"] { padding: 0.42rem 0.65rem; border: 1px solid var(--line); border-radius: 7px; background: var(--st-bg); color: var(--ink); font: 13px var(--mono, ui-monospace, Menlo, monospace); }
 .st-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; margin-top: 0.4rem; }
 .st-aside { display: flex; gap: 0.2rem; margin-right: auto; }

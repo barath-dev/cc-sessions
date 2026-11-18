@@ -1,12 +1,14 @@
 # cc-sessions
 
-One place to see, close and resume [Claude Code](https://claude.com/claude-code) sessions
-across every account on a machine, from a local web page or the command line. It also
-adds, renames, re-logs-in, removes and restores the accounts themselves.
+One place to see, close and resume [Claude Code](https://claude.com/claude-code) and
+[Codex](https://github.com/openai/codex) sessions across every account on a machine, from
+a local web page or the command line. It also adds, renames, re-logs-in, removes and
+restores the accounts themselves.
 
-An account is a Claude Code config folder (`~/.claude`, `~/.claude-work`, ...) with a name
-and a shortcut command. `claude agents` only sees one account at a time; cc-sessions asks
-each account in turn and shows the result together, grouped by project folder.
+An account is a config folder of one of the two tools (`~/.claude`, `~/.claude-work`,
+`~/.codex`, `~/.codex-work`, ...) with a name and a shortcut command. Each tool only sees
+one account at a time; cc-sessions reads every account and shows the result together,
+grouped by project folder, with the Usage view counting both.
 
 It is a single small program with nothing else to install, for macOS, Linux and Windows.
 It is an unofficial tool and is not affiliated with Anthropic.
@@ -150,13 +152,13 @@ files in them, accounts as tags in the sidebar.
 
 - **Rename** a session with the pencil on its row, by double-clicking its name, or with
   Enter in the Finder layout. The name is kept by cc-sessions and shown in the page and on
-  the command line; Claude Code keeps its own title. Clear the name to go back to that title.
+  the command line; Claude Code and Codex keep their own titles. Clear the name to go back to that title.
 - **Settings**, from the classic header or the Finder sidebar:
   - **Appearance**: the layout; Light, Dark or Match system; a template (Mac, Classic,
     Graphite or Paper, or each layout's own look); and a primary colour for buttons, links
     and what is selected. These are kept in the browser.
-  - **Accounts**: login, plan, shortcut and folder of each account. Add, rename, change
-    login, remove and restore. **Edit…** opens one dialog for an account's name, alias,
+  - **Accounts**: tool, login, plan, shortcut and folder of each account. Add (as a Claude
+    Code or a Codex account), rename, change login, remove and restore. **Edit…** opens one dialog for an account's name, alias,
     colour (which marks it everywhere), login and removal.
   - **General**: **updates** (version, check now, automatic or not), **report a problem**
     and **suggest a feature**, the **code editor** that folders open in, picked from the ones found on
@@ -166,9 +168,12 @@ files in them, accounts as tags in the sidebar.
 - **From the keyboard** in the classic layout, **Skip to sessions** is the first stop, the
   arrow keys move through the list and the folder tree, and Esc closes the details.
 
-Statuses: `Working` (Claude is busy), `Blocked` (waiting for your input), `Idle` (open in
+Statuses: `Working` (busy on a task), `Blocked` (waiting for your input), `Idle` (open in
 a terminal, doing nothing), `Done` (background task finished, not closed), `Closed`
-(stopped through this tool, or stopped in Claude Code).
+(stopped through this tool, or stopped in Claude Code or Codex).
+
+A Codex account's name is shown with a small **Codex** mark where the name does not
+already say so.
 
 ## What it never does
 
@@ -183,12 +188,13 @@ a terminal, doing nothing), `Done` (background task finished, not closed), `Clos
 - Its own records are rewritten in place with the previous version kept as `<file>.bak`.
 
 The only files it removes are its own launchers: its pid file, a command link it created
-when you change the command name, and on Windows the `claude-<name>.cmd` launcher of an
-account you renamed or removed. None of them hold data.
+when you change the command name, and on Windows the `claude-<name>.cmd` or
+`codex-<name>.cmd` launcher of an account you renamed or removed. None of them hold data.
 
 Claude Code itself deletes conversations after `cleanupPeriodDays` (30 by default) without
 activity. Settings › Accounts shows that number per account. To keep history longer, set
-`cleanupPeriodDays` in that account's `settings.json`.
+`cleanupPeriodDays` in that account's `settings.json`. Codex keeps its conversations until
+they are deleted.
 
 ## Command line
 
@@ -198,7 +204,7 @@ cc-sessions history [--folder PATH] [--account NAME] [--by-date] [--json]
 cc-sessions close <id>... | --folder PATH | --account NAME  [--yes]
 cc-sessions rename <id> NEW NAME | --reset
 cc-sessions account list [--removed]
-cc-sessions account add NAME [--alias A] [--dir PATH] [--no-login]
+cc-sessions account add NAME [--tool claude|codex] [--alias A] [--dir PATH] [--no-login]
 cc-sessions account rename NAME NEW-NAME [--alias A]
 cc-sessions account login NAME
 cc-sessions account remove NAME [--yes]
@@ -212,7 +218,11 @@ Session ids are shown as `account:id`. `close` asks before closing, asks separat
 each interactive session, and skips the session it is run from. `--yes` only skips the
 question for background sessions. `history` groups by folder; `--by-date` prints one list,
 newest first. `rename` takes the id `history` shows, and `--reset` gives a session its own
-title back.
+title back. `account add` makes a Claude Code account unless `--tool codex` says otherwise;
+a Codex account's folder defaults to `~/.codex-NAME` and its shortcut to `codex-NAME`.
+
+A Codex session's short id is the end of its id, not the start: Codex ids begin with the
+time they were made, so conversations started together share their first characters.
 
 ## Differences between systems
 
@@ -220,9 +230,15 @@ title back.
 |---|---|---|
 | Settings and records | `~/.config/cc-sessions` | `%APPDATA%\cc-sessions` |
 | Program | `~/.local/share/cc-sessions/cc-sessions` | `%LOCALAPPDATA%\cc-sessions\cc-sessions.exe` |
-| Account shortcuts | aliases loaded by one line in `~/.zshrc` or `~/.bashrc` (fish: a `conf.d` file) | `claude-<name>.cmd` launchers on your PATH |
+| Account shortcuts | aliases loaded by one line in `~/.zshrc` or `~/.bashrc` (fish: a `conf.d` file) | `claude-<name>.cmd` and `codex-<name>.cmd` launchers on your PATH |
 | Closing an interactive session | asks it to exit, and leaves it if it has not within 5 seconds | ends it immediately; Windows offers no gentler way |
+| Running Codex sessions | found from the running processes (`ps`, and `lsof` on macOS) | not found yet; saved Codex conversations are listed and can be resumed |
 | Resume opens | iTerm or Terminal; on Linux the first terminal program found | Windows Terminal, else Command Prompt |
+
+On macOS, Resume and Log in type their command into the new iTerm or Terminal window, as
+`env CLAUDE_CONFIG_DIR=<folder> claude …` (or `CODEX_HOME` and `codex`), after clearing
+the line. A key pressed while the window comes to the front cannot change which account
+the command runs as; at worst the command is not found.
 
 On a Linux machine with no desktop (for example over SSH), Resume cannot open a terminal
 window; the Copy button still gives the command. Claude Code running inside WSL is covered
@@ -237,7 +253,7 @@ In the settings folder above:
 | File | Purpose |
 |---|---|
 | `config.json` | Answers from setup: command name, port, shortcut, idle limit, automatic updates. |
-| `accounts.json` | Account registry: name, folder, shortcut, colour, removed flag. |
+| `accounts.json` | Account registry: name, tool, folder, shortcut, colour, removed flag. |
 | `aliases.sh` | Generated account shortcuts (macOS, Linux). |
 | `icon.png`, `icon.ico` | Icon of the clickable shortcut (Linux, Windows). |
 | `closed.json` | Sessions closed through the tool. |
@@ -262,6 +278,8 @@ from `ui-token` on every API call, rejects requests whose `Host` is not
 
 ## How sessions are read and closed
 
+### Claude Code
+
 - Sessions come from `claude agents --json --all`, run once per account. The default
   account runs with `CLAUDE_CONFIG_DIR` unset; the others with it set to their folder.
 - Background sessions are closed with `claude stop <id>`. For an interactive one, the tool
@@ -277,11 +295,57 @@ from `ui-token` on every API call, rejects requests whose `Host` is not
   own, which are not counted, and days older than an account's `cleanupPeriodDays` are
   empty because Claude Code has deleted them.
 
+### Codex
+
+- Codex has no command that lists its running sessions. cc-sessions looks for running
+  `codex` programs, leaving out its background service (`codex app-server`), its helpers
+  (`codex-code-mode-host`, `codex-exec-server`) and commands like `codex login`. Since
+  Codex 0.160 a session's turns run in that background service, which writes the
+  conversation file, so a session is matched by the conversation `codex resume` was given,
+  or by its folder (`-C`, else its own) and the newest conversation there since it
+  started. Several windows in one folder are matched newest first, each to a conversation
+  of its own. One run with `--no-daemon` writes the file itself and is matched by it.
+- Two limits follow from that. Two windows in one folder that get their first prompts in
+  the opposite order to the one they were opened in may be shown the wrong way round:
+  nothing tells them apart. And a window started with a prompt whose first word is a
+  Codex command (`codex "update the docs"`) looks like that command (`codex update`), and
+  is not listed.
+- The end of the conversation file says whether a session is working or idle. Codex does
+  not write approval requests there, so for a session the file says is working, the
+  background service is asked (`thread/read`) whether it is waiting for an approval or an
+  answer.
+- The background service carries on with a turn after its window is closed. Such a turn is
+  listed as working, without a window, once the service confirms it is still running. So
+  is a conversation whose last turn left a command running ("Process running with session
+  ID" in its output): Codex keeps those in background terminals after the turn ends.
+- Closing checks the process is still that Codex session, stops the turn it is in the
+  middle of through the background service (`turn/interrupt`, by way of
+  `codex app-server proxy`) and ends the commands it left running
+  (`thread/backgroundTerminals/clean`, as Codex's `/stop` does), then asks the window to
+  exit, as for Claude Code. A window run
+  with `--no-daemon` runs each command in a process group of its own, which would outlive
+  it, so those are ended with it.
+- History is read from `<account>/sessions/YYYY/MM/DD/rollout-*.jsonl`, and from the
+  `.jsonl.zst` files Codex compresses finished ones into, read-only. Conversations archived
+  in Codex are left out, as are sub-agents' threads and side conversations left empty.
+  Titles are the names Codex keeps in `session_index.jsonl`, else the first prompt; a
+  `codex review` has none, and is named after what it reviews.
+- The loop check reads Codex's patches and the commands that failed, also when Codex runs
+  them from a script of its own (code mode), where each command's own output is taken
+  without the script's timings.
+- Token counts come from the running totals Codex records after each reply. A forked
+  conversation's first total includes its parent's, so only its own reply counts there.
+- Who is signed in is read from the email and plan in the identity token in the account's
+  `auth.json` (nothing else in it is read), or from `codex login status` when Codex keeps
+  the login in the system keychain. The default account runs with `CODEX_HOME` unset; the
+  others with it set to their folder. Resume runs `codex resume <id>` in the session's
+  folder.
+
 ## Building from source
 
 ```sh
 cargo build --release      # target/release/cc-sessions
-cargo test                 # unit tests, and end-to-end tests against a fake claude
+cargo test                 # unit tests, and end-to-end tests against a fake claude (and codex)
 ```
 
 Everything that differs between systems is in `src/os/`. The page is in `ui/` and is built

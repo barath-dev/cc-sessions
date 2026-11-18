@@ -6,10 +6,10 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::accounts;
-use crate::claude;
 use crate::os;
 use crate::proc;
 use crate::server::VERSION;
+use crate::tools::{self, Tool};
 use crate::update;
 
 const NEW_ISSUE: &str = "https://github.com/barath-dev/cc-sessions/issues/new";
@@ -18,18 +18,21 @@ const MAX_URL: usize = 6000;
 
 /// Version, system and setup, for a report and for the page's report preview.
 pub fn diagnostics() -> Value {
-    let claude_version = claude::claude_bin()
-        .ok()
-        .and_then(|bin| proc::run(std::process::Command::new(bin).arg("--version"), Duration::from_secs(10)).ok())
-        .map(|out| out.stdout.trim().to_string())
-        .filter(|v| !v.is_empty());
+    let version = |tool: Tool| {
+        tools::bin(tool)
+            .ok()
+            .and_then(|bin| proc::run(std::process::Command::new(bin).arg("--version"), Duration::from_secs(10)).ok())
+            .map(|out| out.stdout.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
     let accounts = accounts::load_accounts(false).map(|a| a.len()).unwrap_or(0);
     let config = accounts::load_config();
     json!({
         "version": VERSION,
         "latest": update::status().get("latest"),
         "system": format!("{} ({})", os::os_release(), std::env::consts::ARCH),
-        "claudeCode": claude_version,
+        "claudeCode": version(Tool::Claude),
+        "codex": version(Tool::Codex),
         "accounts": accounts,
         "autoUpdate": config.auto_update,
         "installedCopy": update::managed(),
@@ -45,11 +48,12 @@ pub fn summary(diag: &Value) -> String {
     };
     let on = |key: &str| if diag.get(key).and_then(Value::as_bool).unwrap_or(false) { "on" } else { "off" };
     format!(
-        "cc-sessions: {}\nLatest release: {}\nSystem: {}\nClaude Code: {}\nAccounts: {}\nAuto-update: {}",
+        "cc-sessions: {}\nLatest release: {}\nSystem: {}\nClaude Code: {}\nCodex: {}\nAccounts: {}\nAuto-update: {}",
         text("version"),
         text("latest"),
         text("system"),
         text("claudeCode"),
+        text("codex"),
         text("accounts"),
         on("autoUpdate")
     )

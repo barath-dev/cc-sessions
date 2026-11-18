@@ -4,7 +4,7 @@
 const ACCOUNT_COLORS = ['#0f9488', '#7c56d8', '#d0661c', '#c2417c', '#2f6fd0', '#4a8f2f', '#b08412', '#64768a'];
 const STATUS_LABELS = { working: 'Working', blocked: 'Blocked', idle: 'Idle', done: 'Done', closed: 'Closed' };
 const STATUS_HINTS = {
-  working: 'Claude is working',
+  working: 'Working on a task',
   blocked: 'Waiting for your input',
   idle: 'Open in a terminal, not doing anything',
   done: 'Finished its task; not closed yet',
@@ -128,8 +128,19 @@ function autoColor(index) {
 // An icon from icons.js, drawn in the current text colour.
 const icon = (name) => window.ccIcon(name);
 
+// The tool an account belongs to ('claude' for one the page does not know).
+function toolOf(name) {
+  const account = state.data && state.data.accounts.find((a) => a.name === name);
+  return (account && account.tool) || 'claude';
+}
+
+const toolLabel = (tool) => (window.ccTools ? window.ccTools.label(tool) : tool);
+
+// An account's name, and its tool when that is not Claude Code and the name does not already say so.
 function accountTag(name) {
-  return h('span', { class: 'acct', style: { '--acct': accountColor(name) } }, name);
+  const tool = toolOf(name);
+  const mark = tool !== 'claude' && !name.includes(tool) && h('span', { class: 'tool-mark' }, toolLabel(tool));
+  return h('span', { class: 'acct', style: { '--acct': accountColor(name) }, title: `${name} · ${toolLabel(tool)}` }, name, mark);
 }
 
 function statusBadge(status) {
@@ -222,7 +233,7 @@ const OFFLINE_TEXT = {
   stopped: ['Disconnected', 'The Claude Sessions server is not running. Start it again from any terminal:',
     'It stops by itself after a while with no page open. This page reconnects once the server is back.'],
   disconnected: ['Disconnected', 'The Claude Sessions server has stopped. Start it again from any terminal:',
-    'Your Claude sessions, accounts and data were not touched and keep running.'],
+    'Your Claude Code and Codex sessions, accounts and data were not touched and keep running.'],
   token: ['Open this page from the terminal', 'This browser does not have the access key for the server. Run:',
     'That opens the page with the key, and it is remembered after that.'],
 };
@@ -261,7 +272,7 @@ async function disconnect() {
   const ok = await showDialog({
     title: 'Disconnect Claude Sessions?',
     body: [h('p', {}, 'This stops the Claude Sessions server and this page stops updating.'),
-      h('p', {}, 'Your Claude sessions keep running. Nothing is closed or deleted.')],
+      h('p', {}, 'Your Claude Code and Codex sessions keep running. Nothing is closed or deleted.')],
     confirmLabel: 'Disconnect',
     onConfirm: () => api('/api/shutdown', {}),
   });
@@ -877,7 +888,7 @@ function renderSessions() {
       render();
     };
     const message = reading ? 'Reading saved conversations…'
-      : !all.length ? 'No sessions yet. Start Claude Code in any folder and it shows up here.'
+      : !all.length ? 'No sessions yet. Start Claude Code or Codex in any folder and it shows up here.'
         : needs && !scope.length ? 'Nothing is waiting for you.'
           : `Nothing matches ${active.length ? active.join(', ') : 'here'}${place ? ` in ${place}` : ''}.`;
     $('#list').replaceChildren(h('div', { class: 'empty' },
@@ -904,7 +915,8 @@ function renderSessions() {
     if (!several || (folder && e.folder === folder)) return '';
     return folder ? e.folder.slice(folder.length + 1) : folderPath(e.folder);
   };
-  const days = [...new Set(accounts.map((a) => a.retentionDays))].sort((a, b) => a - b);
+  // Codex accounts have no such setting (null).
+  const days = [...new Set(accounts.map((a) => a.retentionDays).filter((d) => d != null))].sort((a, b) => a - b);
   const span = days.length > 1 ? `${days[0]} to ${days[days.length - 1]}` : `${days[0] || 30}`;
   const ordered = groups.flatMap(([, entries]) => entries).map((e) => e.key);
   rowCursor = [state.cursor, state.selected].find((key) => ordered.includes(key)) ?? ordered[0];
@@ -931,8 +943,10 @@ function renderSessions() {
         icon('eye'), state.showEmpty ? 'Hide empty conversations' : `Show ${plural(hiddenEmpty, 'empty conversation')}`),
       h('span', { class: 'quiet' }, ' Opened and never used: no prompts.')),
     h('p', { class: 'quiet list-note' }, reading ? 'Reading saved conversations…'
-      : `Claude Code itself deletes conversations after ${span} days without activity ` +
-        '(its cleanupPeriodDays setting, shown per account under Accounts). Claude Sessions never deletes any.'));
+      : (activeAccounts().some((a) => a.tool === 'claude') ? `Claude Code itself deletes conversations after ${span} days without activity ` +
+        '(its cleanupPeriodDays setting, shown per account under Accounts). ' : '') +
+        (activeAccounts().some((a) => a.tool === 'codex') ? 'Codex keeps its conversations until they are deleted. ' : '') +
+        'Claude Sessions never deletes any.'));
 }
 
 function isEmpty(e) {
@@ -1119,11 +1133,11 @@ function renameBox(e) {
     const value = box.value.trim();
     state.renaming = null;
     render();
-    // Saving Claude Code's own title back would pin it; leave it to follow along.
+    // Saving the tool's own title back would pin it; leave it to follow along.
     if (save && value !== e.name && (value || e.renamed)) saveName(e, value);
   };
   const box = h('input', { type: 'text', class: 'rename', value: e.name, 'aria-label': 'Session name',
-    placeholder: 'Empty goes back to Claude Code\'s title', autocomplete: 'off', spellcheck: false,
+    placeholder: `Empty goes back to ${toolLabel(toolOf(e.account))}'s title`, autocomplete: 'off', spellcheck: false,
     onclick: (event) => event.stopPropagation(),
     ondblclick: (event) => event.stopPropagation(),
     onkeydown: (event) => {
@@ -1139,7 +1153,7 @@ function renameBox(e) {
 async function saveName(e, title) {
   try {
     const saved = await api('/api/sessions/rename', { account: e.account, sessionId: e.sessionId, title });
-    toast(saved.title ? `Renamed to ${saved.title}.` : 'Back to Claude Code\'s own title.');
+    toast(saved.title ? `Renamed to ${saved.title}.` : `Back to ${toolLabel(toolOf(e.account))}'s own title.`);
   } catch (err) {
     toast(err.message, 'error');
   }
@@ -1197,6 +1211,7 @@ function entryDetails(e, where) {
       pinButton(e)),
     h('dl', { class: 'facts' }, [
       ['Account', `${e.account}${account.email ? ` (${account.email})` : ''}`],
+      ['Tool', toolLabel(toolOf(e.account))],
       ['Folder', e.cwd],
       ['Started', fullDate((s && s.startedAt) || (item && item.startedAt))],
       [e.open ? 'Updated' : s ? 'Closed' : 'Last activity', fullDate(e.at)],
@@ -1223,7 +1238,8 @@ function sessionSummary(s) {
 }
 
 async function closeOne(s) {
-  const interactive = s.kind === 'interactive';
+  // A Codex turn can carry on after its window was closed: there is no terminal then.
+  const interactive = s.kind === 'interactive' && !(toolOf(s.account) === 'codex' && !s.pid);
   // Windows cannot ask a terminal program to exit, so the server says when a close is forced.
   const graceful = (state.data.platform || {}).gracefulClose !== false;
   const ok = await showDialog({

@@ -11,6 +11,7 @@ use crate::accounts::{self, Account, Config};
 use crate::cli::Args;
 use crate::os::{self, ShellHook};
 use crate::store::{self, state_file};
+use crate::tools;
 use crate::util::{err, expand_tilde, home, now_ms, path_str, tilde, Error, Result};
 
 /// Read one answer; Enter (or no terminal at all) keeps the default.
@@ -40,15 +41,17 @@ fn ask_yes(question: &str, default: bool, unattended: bool) -> bool {
     }
 }
 
-/// `alias NAME="CLAUDE_CONFIG_DIR=PATH claude"` lines the person already has,
-/// as (folder, alias), so a first import keeps the names they are used to.
+/// `alias NAME="CLAUDE_CONFIG_DIR=PATH claude"` (or `CODEX_HOME=PATH codex`) lines
+/// the person already has, as (folder, alias), so a first import keeps the names they are used to.
 pub fn known_aliases(rc_text: &str) -> Vec<(PathBuf, String)> {
     let mut found = Vec::new();
     for line in rc_text.lines() {
         let Some(rest) = line.trim().strip_prefix("alias ") else { continue };
         let Some((name, value)) = rest.split_once('=') else { continue };
-        let Some((_, after)) = value.split_once("CLAUDE_CONFIG_DIR=") else { continue };
-        if !value.contains("claude") || !accounts::valid_alias(name.trim()) {
+        let Some((tool, after)) = tools::ALL.into_iter().find_map(|t| value.split_once(&format!("{}=", t.env_var())).map(|(_, a)| (t, a))) else {
+            continue;
+        };
+        if !value.contains(tool.program()) || !accounts::valid_alias(name.trim()) {
             continue;
         }
         let raw: String = after.trim_start_matches(['"', '\'']).chars().take_while(|c| !c.is_whitespace() && !"\"'".contains(*c)).collect();
@@ -78,7 +81,7 @@ pub fn apply_hook(hook: &ShellHook) -> Result<String> {
     let missing: Vec<&String> = hook.lines.iter().filter(|wanted| !lines.iter().any(|l| l.trim() == wanted.as_str())).collect();
     if !missing.is_empty() {
         lines.push(String::new());
-        lines.push("# cc-sessions: Claude Code account shortcuts".to_string());
+        lines.push("# cc-sessions: Claude Code and Codex account shortcuts".to_string());
         lines.extend(missing.into_iter().cloned());
         changed = true;
     }
@@ -102,8 +105,8 @@ fn rc_text(hook: Option<&ShellHook>) -> String {
 }
 
 fn valid_command(name: &str) -> Result<()> {
-    if !accounts::valid_alias(name) || name == "claude" {
-        return err("The command name must be letters, digits, dashes or underscores, and not 'claude'.");
+    if !accounts::valid_alias(name) || tools::ALL.iter().any(|t| t.program() == name) {
+        return err("The command name must be letters, digits, dashes or underscores, and not 'claude' or 'codex'.");
     }
     Ok(())
 }
@@ -145,40 +148,44 @@ pub fn run(args: &Args) -> Result<()> {
     let shortcut = switch(args, "shortcut", "no-shortcut")
         .unwrap_or_else(|| ask_yes("Add a clickable shortcut (Applications / Start menu)?", old.shortcut, unattended));
 
-    // 4. Register the Claude Code folders found (first run only)
+    // 4. Register the Claude Code and Codex folders found (first run only)
     let mut import: Option<Vec<Account>> = None;
     if accounts::registry_exists() {
         println!("Accounts: {} already registered; left as they are.", accounts::load_accounts(false)?.len());
+        for extra in accounts::unregistered_folders()? {
+            let dir = tilde(&extra.dir);
+            println!("  {} folder {dir} is not registered. Add it with: {command} account add {} --tool {} --dir {dir}", extra.tool.label(), extra.name, extra.tool.id());
+        }
     } else {
         let found = accounts::discover(&known_aliases(&rc_text(hook.as_ref())));
         if found.is_empty() {
-            println!("No Claude Code folders found yet. Add accounts later with: {command} account add NAME");
+            println!("No Claude Code or Codex folders found yet. Add accounts later with: {command} account add NAME");
             import = Some(Vec::new());
         } else {
-            println!("Claude Code folders found:");
+            println!("Folders found:");
             for acc in &found {
-                let alias = acc.alias.clone().unwrap_or_else(|| "claude".into());
-                println!("  {:<12} {:<18} {}", acc.name, alias, tilde(&acc.dir));
+                let alias = acc.start_command().unwrap_or_default();
+                println!("  {:<12} {:<12} {:<18} {}", acc.name, acc.tool.label(), alias, tilde(&acc.dir));
             }
             let yes = if args.has("no-import") { false } else { ask_yes("Register these as accounts?", true, unattended) };
             import = Some(if yes { found } else { Vec::new() });
         }
     }
 
-    // 5. Manage the claude-* shortcuts
+    // 5. Manage the claude-* and codex-* shortcuts
     let manage_default = if config_exists { old.manage_aliases } else { true };
     let manage = if args.has("no-aliases") {
         false
     } else {
         match &hook {
             Some(h) => {
-                println!("To make the claude-* shortcuts work, this line is added to {}:", tilde(&path_str(&h.file)));
+                println!("To make the claude-* and codex-* shortcuts work, this line is added to {}:", tilde(&path_str(&h.file)));
                 for line in &h.lines {
                     println!("    {line}");
                 }
-                ask_yes("Let cc-sessions manage the claude-* shortcuts?", manage_default, unattended)
+                ask_yes("Let cc-sessions manage the claude-* and codex-* shortcuts?", manage_default, unattended)
             }
-            None => ask_yes("Let cc-sessions manage the claude-* shortcuts?", manage_default, unattended),
+            None => ask_yes("Let cc-sessions manage the claude-* and codex-* shortcuts?", manage_default, unattended),
         }
     };
 
@@ -204,7 +211,7 @@ pub fn run(args: &Args) -> Result<()> {
 
     if shortcut {
         println!("Shortcut:  {}", tilde(&path_str(&os::install_shortcut(&exe)?)));
-    } else if old.shortcut {
+    } else if old.shortcut && config_exists {
         println!("Shortcut:  no longer wanted; the existing one was left in place for you to delete.");
     }
 
@@ -218,7 +225,7 @@ pub fn run(args: &Args) -> Result<()> {
     if manage {
         match &hook {
             Some(h) => println!("Shortcuts: {}", apply_hook(h)?),
-            None if os::IS_WINDOWS => println!("Shortcuts: claude-* launchers are in the cc-sessions bin folder on your PATH."),
+            None if os::IS_WINDOWS => println!("Shortcuts: claude-* and codex-* launchers are in the cc-sessions bin folder on your PATH."),
             None => println!(
                 "Shortcuts: written to {}; load that file from your shell's startup file to use them.",
                 tilde(&path_str(&state_file("aliases.sh")))

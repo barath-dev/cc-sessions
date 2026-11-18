@@ -472,6 +472,7 @@ mark { padding: 0 0.1em; border-radius: 2px; background: var(--mark); color: inh
 
 .acct { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; white-space: nowrap; }
 .acct::before { content: ""; flex: none; width: 0.6rem; height: 0.6rem; border-radius: 2px; background: var(--acct); }
+.tool-mark { padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 4px; font-size: 0.75rem; color: var(--muted); }
 
 .status { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.9rem; white-space: nowrap; }
 .status::before { content: ""; flex: none; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--idle); }

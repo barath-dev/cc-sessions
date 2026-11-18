@@ -1,4 +1,6 @@
 //! Live and background sessions of every account, with the closed ledger merged in.
+//! Claude Code reports its own (`claude agents`); Codex's are found among the
+//! running processes (`codex::running`).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -9,13 +11,14 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::accounts::{self, Account};
-use crate::claude;
+use crate::codex;
 use crate::history::Artifact;
 use crate::os;
 use crate::resume;
 use crate::store::{self, state_file};
 use crate::pins::{self, Pins};
 use crate::titles::{self, Titles};
+use crate::tools::{self, Tool};
 use crate::util::{iso_to_ms, now_ms, path_str, Error, Result};
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,6 +33,7 @@ pub struct TimelineEntry {
 pub struct Session {
     pub key: String,
     pub account: String,
+    pub tool: Tool,
     pub account_dir: String,
     pub id: String,
     pub session_id: String,
@@ -57,6 +61,9 @@ pub struct Session {
     pub timeline: Vec<TimelineEntry>,
     pub closed_at: Option<i64>,
     pub resume_command: String,
+    /// The conversation file a running Codex session holds, to check it is still the same one before closing it.
+    #[serde(skip)]
+    pub rollout: Option<PathBuf>,
 }
 
 impl Session {
@@ -112,6 +119,7 @@ fn normalise(acc: &Account, raw: &Value) -> Session {
     let mut sess = Session {
         key: String::new(),
         account: acc.name.clone(),
+        tool: acc.tool,
         account_dir: acc.dir.clone(),
         id: text(raw, "id").unwrap_or_else(|| session_id.chars().take(8).collect()),
         session_id,
@@ -132,6 +140,7 @@ fn normalise(acc: &Account, raw: &Value) -> Session {
         timeline: Vec::new(),
         closed_at: None,
         resume_command: String::new(),
+        rollout: None,
     };
     if interactive {
         sess.status = interactive_status(raw.get("status").and_then(Value::as_str).unwrap_or("idle"));
@@ -170,10 +179,18 @@ fn sessions_from_records(acc: &Account) -> Vec<Session> {
         .collect()
 }
 
-/// Sessions of one account as `claude agents` reports them. The second value
-/// is a notice when only part of the picture could be read.
-pub fn fetch_account_sessions(acc: &Account) -> Result<(Vec<Session>, Option<String>)> {
-    let out = claude::run(acc, &["agents", "--json", "--all"], 30)?;
+/// Sessions of one account. The second value is a notice when only part of the
+/// picture could be read. `running` is every running Codex session, found once for all accounts.
+pub fn fetch_account_sessions(acc: &Account, running: &codex::Windows) -> Result<(Vec<Session>, Option<String>)> {
+    match acc.tool {
+        Tool::Claude => claude_sessions(acc),
+        Tool::Codex => Ok(codex_sessions(acc, running)),
+    }
+}
+
+/// Sessions of a Claude Code account as `claude agents` reports them.
+fn claude_sessions(acc: &Account) -> Result<(Vec<Session>, Option<String>)> {
+    let out = tools::run(acc, &["agents", "--json", "--all"], 30)?;
     match serde_json::from_str::<Value>(&out.stdout) {
         Ok(Value::Array(items)) => Ok((items.iter().filter(|i| i.is_object()).map(|i| normalise(acc, i)).collect(), None)),
         _ => {
@@ -185,6 +202,53 @@ pub fn fetch_account_sessions(acc: &Account) -> Result<(Vec<Session>, Option<Str
             Ok((sessions_from_records(acc), Some(notice)))
         }
     }
+}
+
+/// The running Codex sessions of one account. Codex has no background sessions.
+fn codex_sessions(acc: &Account, running: &codex::Windows) -> (Vec<Session>, Option<String>) {
+    let notice = os::IS_WINDOWS.then(|| "Running Codex sessions are not found on Windows yet; its saved conversations are listed.".to_string());
+    let names = codex::thread_names(Path::new(&acc.dir));
+    let mine: Vec<codex::Running> =
+        running.sessions.iter().filter(|r| r.account_dir == Path::new(&acc.dir)).cloned().chain(codex::background(acc, running)).collect();
+    let from_files: Vec<(String, String)> = mine.iter().map(|r| (r.session_id.clone(), codex::status(&r.rollout))).collect();
+    let live = codex::live_statuses(acc, &from_files);
+    let found = mine
+        .iter()
+        .zip(from_files)
+        .map(|(r, (_, from_file))| {
+            let updated = fs::metadata(&r.rollout).and_then(|m| m.modified()).ok();
+            let updated = updated.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64);
+            Session {
+                key: String::new(),
+                account: acc.name.clone(),
+                tool: acc.tool,
+                account_dir: acc.dir.clone(),
+                id: acc.tool.short_id(&r.session_id),
+                session_id: r.session_id.clone(),
+                kind: "interactive".into(),
+                cwd: r.cwd.clone(),
+                name: names.get(&r.session_id).cloned().or_else(|| codex::first_prompt(&r.rollout)).unwrap_or_else(|| "(unnamed)".into()),
+                renamed: false,
+                pinned: false,
+                claude_name: None,
+                artifacts: Vec::new(),
+                started_at: r.started_at,
+                updated_at: updated.or(r.started_at),
+                pid: r.pid,
+                live: true,
+                status: if r.commands_only { "working".into() } else { live.get(&r.session_id).cloned().unwrap_or(from_file) },
+                open: true,
+                detail: r.pid.is_none().then(|| {
+                    if r.commands_only { "Its window was closed; a command it started is still running." } else { "Its window was closed; Codex is still running its turn in the background." }.to_string()
+                }),
+                timeline: Vec::new(),
+                closed_at: None,
+                resume_command: String::new(),
+                rollout: Some(r.rollout.clone()),
+            }
+        })
+        .collect();
+    (found, notice)
 }
 
 // ----------------------------------------------------------------------- ledger
@@ -234,6 +298,7 @@ fn session_from_ledger(acc: &Account, entry: &Value) -> Session {
     Session {
         key: String::new(),
         account: acc.name.clone(),
+        tool: acc.tool,
         account_dir: acc.dir.clone(),
         id: text(entry, "id").unwrap_or_else(|| session_id.chars().take(8).collect()),
         session_id,
@@ -254,6 +319,7 @@ fn session_from_ledger(acc: &Account, entry: &Value) -> Session {
         timeline: Vec::new(),
         closed_at,
         resume_command: String::new(),
+        rollout: None,
     }
 }
 
@@ -265,8 +331,11 @@ pub type Notices = BTreeMap<String, String>;
 /// Sessions of every given account, with a notice for each account that could
 /// not be read completely.
 pub fn all_sessions(accounts: &[Account]) -> Result<(Vec<Session>, Notices)> {
+    let codex_dirs: Vec<PathBuf> = accounts.iter().filter(|a| a.tool == Tool::Codex).map(|a| PathBuf::from(&a.dir)).collect();
+    let running = if codex_dirs.is_empty() { codex::Windows::default() } else { codex::running(&codex_dirs) };
+    let running = &running;
     let fetched: Vec<Result<(Vec<Session>, Option<String>)>> = thread::scope(|scope| {
-        let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || fetch_account_sessions(acc))).collect();
+        let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || fetch_account_sessions(acc, running))).collect();
         handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(Error("reader crashed".into())))).collect()
     });
 
@@ -328,7 +397,14 @@ pub fn all_sessions(accounts: &[Account]) -> Result<(Vec<Session>, Notices)> {
 /// that polls often can skip `claude agents` until something actually changed.
 pub fn fingerprint(accounts: &[Account], sessions: &[Session]) -> Vec<(String, u128, u64)> {
     let mut paths = vec![state_file("accounts.json"), ledger_file(), titles::titles_file(), pins::pins_file()];
-    for acc in accounts {
+    // A running Codex session's file grows as it works (its status), and its names are kept apart.
+    paths.extend(sessions.iter().filter_map(|s| s.rollout.clone()));
+    for acc in accounts.iter().filter(|a| a.tool == Tool::Codex) {
+        paths.push(Path::new(&acc.dir).join("session_index.jsonl"));
+        // A window's conversation file appears only with its first prompt.
+        paths.extend(codex::newest_day(Path::new(&acc.dir)));
+    }
+    for acc in accounts.iter().filter(|a| a.tool == Tool::Claude) {
         let base = Path::new(&acc.dir);
         if let Ok(entries) = fs::read_dir(base.join("sessions")) {
             paths.extend(entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")));
@@ -347,10 +423,21 @@ pub fn fingerprint(accounts: &[Account], sessions: &[Session]) -> Vec<(String, u
             Some((path_str(path), modified, meta.len()))
         })
         .collect();
+    // A Codex turn that went quiet may be waiting for an approval, which only its background service knows.
+    for sess in sessions.iter().filter(|s| s.status == "working") {
+        let quiet = sess.rollout.as_ref().and_then(|r| fs::metadata(r).ok()?.modified().ok()?.elapsed().ok()).is_some_and(|d| d.as_secs() >= 3);
+        parts.push((format!("quiet:{}", sess.key), quiet as u128, 0));
+    }
     // A process that died without touching its record still changes the picture.
     for sess in sessions.iter().filter(|s| s.live) {
         let alive = sess.pid.is_some_and(os::pid_alive);
         parts.push((format!("pid:{}", sess.pid.unwrap_or(0)), alive as u128, 0));
+    }
+    // A Codex session that started since; Codex keeps no record of its own to watch.
+    if accounts.iter().any(|a| a.tool == Tool::Codex) {
+        for pid in codex::session_pids() {
+            parts.push((format!("codex:{pid}"), 1, 0));
+        }
     }
     parts
 }
