@@ -14,10 +14,13 @@
 //
 //   sh docs/record-demo/setup-voice.sh     (once, for the Kokoro voice)
 //   cargo build --release
-//   node docs/record-demo/record.mjs [--keep] [--still] [--no-music]
+//   node docs/record-demo/record.mjs [--keep] [--still] [--no-music] [--film whats-new] [--out file.mp4]
 //
 // --keep leaves the demo home and the captured frames in place for a look.
 // --still makes only docs/demo.png. --no-music leaves out the music bed.
+// --film whats-new makes a 15-second square clip of what is new in 2.6 and 2.7, for
+// a social feed (docs/whats-new.mp4), instead of the launch film, and no still.
+// --out writes the film somewhere else.
 // CHROME, FFMPEG, FFPROBE and SAY name the programs if they are not in the usual place.
 // DEMO_WORK_DIR is where the frames go while recording (about 500 MB; default
 // the system's temporary folder).
@@ -35,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '..', '..');
-const EXE = path.join(REPO, 'target', 'release', 'cc-sessions');
+const EXE = path.join(REPO, 'target', 'release', 'paddock');
 const FAKE_CLAUDE = path.join(REPO, 'target', 'release', 'fake-claude');
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const FFMPEG = process.env.FFMPEG || 'ffmpeg';
@@ -45,21 +48,31 @@ const KEEP = process.argv.includes('--keep');
 // Only docs/demo.png: no narration, no recording.
 const STILL_ONLY = process.argv.includes('--still');
 const NO_MUSIC = process.argv.includes('--no-music');
+// --film paddock --stills takes the Paddock film's stills and stops, for paddock-film/film.mjs to be run on its own.
+const STILLS_ONLY = process.argv.includes('--stills');
+// The word after a flag, or null.
+const option = (name) => { const i = process.argv.indexOf(name); return i < 0 ? null : process.argv[i + 1] || null; };
+// Which film: 'launch' (the README's) or 'whats-new' (a short square clip for a feed).
+const FILM = option('--film') || 'launch';
+const OUT = option('--out');
 
 // Short on purpose: the resume command in a session's details prints this path.
 const HOME = '/tmp/alex';
 const MARKER = path.join(HOME, '.cc-sessions-demo');
-const STATE = path.join(HOME, '.config', 'cc-sessions');
+const STATE = path.join(HOME, '.config', 'paddock');
 const BIN = path.join(HOME, 'bin');
 const PORT = 47999;
 
-// The page is laid out at 1280x800 and drawn at twice that, then scaled to the
-// video size, which keeps small text sharp.
-const VIEW = { width: 1280, height: 800 };
+// The page is laid out at 1280x800 (960x960 for the square clip) and drawn at twice
+// that, then scaled to the video size, which keeps small text sharp.
+const SQUARE = FILM === 'whats-new';
+const VIEW = SQUARE ? { width: 960, height: 960 } : FILM === 'paddock' ? { width: 1180, height: 820 } : { width: 1280, height: 800 };
 // The still is wider than the video, so a session's details fit in the panel beside the list.
 const STILL = { width: 1600, height: 1000, scale: 1.125 };
-const SCALE = 2;
-const VIDEO = { width: 1600, height: 1000, fps: 30, crf: 20 };
+// The Paddock film's footage is filmed at 4×, so the camera can push in on it 2.4 times
+// in a frame drawn at twice its size and stay sharp.
+const SCALE = FILM === 'paddock' ? 4 : 2;
+const VIDEO = SQUARE ? { width: 1080, height: 1080, fps: 30, crf: 20 } : { width: 1600, height: 1000, fps: 30, crf: 20 };
 
 // The narration voice. Kokoro is used when setup-voice.sh has made its Python
 // environment; speak.py knows where the model is. `speed` 1 is the voice's own pace.
@@ -203,6 +216,99 @@ const HISTORY = [
     'Use a 1.2 ratio on small screens and 1.25 on large ones']],
 ];
 
+// For the Paddock film: a Codex account beside the three Claude Code ones, found by
+// its folder (~/.codex-work, listed as codex-work). Its conversations are rollouts
+// as Codex writes them; `running` ones are held open by a stand-in `codex` process,
+// mid-turn, so they show as working. [folder, title, model, last activity ago, prompts].
+const CODEX = {
+  dir: '.codex-work',
+  claims: { email: 'alex@northwind.example', 'https://api.openai.com/auth': { chatgpt_plan_type: 'pro' } },
+  running: [
+    ['storefront', 'Add Apple Pay to the checkout', 'gpt-6.1-sol', 20 * 1000, [
+      'Add Apple Pay as a payment option on the checkout page, behind the payments feature flag.']],
+    ['gateway', 'Speed up the orders query', 'gpt-6-astra', 50 * 1000, [
+      'The orders list query does a full scan for large accounts. Find a better plan and add the index.']],
+  ],
+  saved: [
+    ['storefront', 'Fix the flaky cart tests', 'gpt-6.1-sol', 3 * HOUR, [
+      'The cart tests fail about one run in five on CI. Find out why.', 'Make the clock in those tests fixed']],
+    ['design', 'Audit button contrast', 'gpt-6-astra', 2 * DAY, [
+      'Check every button variant against WCAG AA contrast and list the ones that fail.']],
+    ['gateway', 'OpenAPI docs for the webhooks', 'gpt-6.1-sol', 5 * DAY, [
+      'Write the OpenAPI description for the webhook endpoints.', 'Add examples for each event type']],
+    ['storefront', 'Search suggestions as you type', 'gpt-6-astra', 9 * DAY, [
+      'Show search suggestions under the box as people type, from the product titles.']],
+  ],
+};
+
+// A Codex rollout ending `ago` before `now`: its turns, with token counts that add up
+// as Codex records them (each event carries the running total). A running one stops
+// mid-turn: started, never completed.
+function rollout(now, folder, title, model, ago, prompts, running) {
+  const { random, between } = seeded(`codex ${title}`);
+  const id = uuid(`codex ${title}`);
+  const cwd = FOLDERS[folder];
+  const end = now - ago;
+  const turns = running ? between(8, 14) : between(16, 40);
+  const start = end - turns * between(3, 9) * MIN;
+  const iso = (at) => new Date(at).toISOString();
+  const lines = [
+    { timestamp: iso(start), type: 'session_meta', payload: { id, cwd, timestamp: iso(start), originator: 'codex-tui', cli_version: '0.170.0', model_provider: 'openai' } },
+    { timestamp: iso(start), type: 'turn_context', payload: { cwd, model } },
+  ];
+  const total = { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0 };
+  for (let i = 0; i < turns; i++) {
+    const at = start + ((end - start) * i) / turns;
+    if (i < prompts.length) {
+      lines.push({ timestamp: iso(at), type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompts[i] }] } });
+    }
+    lines.push({ timestamp: iso(at + 1000), type: 'event_msg', payload: { type: 'task_started' } });
+    const context = between(60000, 150000) + i * between(12000, 26000);
+    total.input_tokens += context;
+    total.cached_input_tokens += Math.round(context * (0.82 + random() * 0.12));
+    total.output_tokens += between(300, 2600);
+    lines.push({ timestamp: iso(at + 60000), type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { ...total } } } });
+    if (!(running && i === turns - 1)) lines.push({ timestamp: iso(at + 61000), type: 'event_msg', payload: { type: 'task_complete' } });
+  }
+  return { id, start, cwd, lines };
+}
+
+function buildCodex(now) {
+  const dir = path.join(HOME, CODEX.dir);
+  const claims = Buffer.from(JSON.stringify(CODEX.claims)).toString('base64url');
+  writeJson(path.join(dir, 'auth.json'), { auth_mode: 'chatgpt', tokens: { id_token: `x.${claims}.sig` } });
+  const index = [];
+  const write = ([folder, title, model, ago, prompts], running) => {
+    const { id, start, cwd, lines } = rollout(now, folder, title, model, ago, prompts, running);
+    // Named in local time, as Codex names them.
+    const at = new Date(start);
+    const two = (n) => String(n).padStart(2, '0');
+    const [y, mo, d] = [String(at.getFullYear()), two(at.getMonth() + 1), two(at.getDate())];
+    const day = path.join(dir, 'sessions', y, mo, d);
+    const stamp = `${y}-${mo}-${d}T${two(at.getHours())}-${two(at.getMinutes())}-${two(at.getSeconds())}`;
+    const file = path.join(day, `rollout-${stamp}-${id}.jsonl`);
+    mkdirSync(day, { recursive: true });
+    writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    utimesSync(file, new Date(now - ago), new Date(now - ago));
+    index.push({ id, thread_name: title });
+    return { file, cwd };
+  };
+  for (const s of CODEX.saved) write(s, false);
+  const held = CODEX.running.map((s) => write(s, true));
+  writeFileSync(path.join(dir, 'session_index.jsonl'), index.map((line) => JSON.stringify(line)).join('\n') + '\n');
+  return held;
+}
+
+// The running Codex sessions: a stand-in `codex` holding each one's rollout open, in its folder.
+// `fake-claude hold` lives two minutes, so these are started just before they are filmed.
+function holdCodex(held) {
+  copyFileSync(FAKE_CLAUDE, path.join(BIN, 'codex'));
+  chmodSync(path.join(BIN, 'codex'), 0o755);
+  for (const { file, cwd } of held) {
+    standIns.push(spawn(path.join(BIN, 'codex'), ['hold', file], { cwd, stdio: 'ignore', env: { PATH: '/usr/bin:/bin' } }));
+  }
+}
+
 function writeJson(file, value) {
   mkdirSync(path.dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(value, null, 2));
@@ -272,7 +378,16 @@ function buildDemo() {
     writeJson(path.join(dir, 'fake-agents.json'), agents);
   }
 
+  const save = (account, cwd, sessionId, ago, lines) => {
+    const file = path.join(HOME, `.claude-${account}`, 'projects', cwd.replaceAll('/', '-'), `${sessionId}.jsonl`);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
+    // The page shows the file's modification time as the conversation's date.
+    utimesSync(file, new Date(now - ago), new Date(now - ago));
+  };
+  const work = FILM === 'whats-new' ? WORK : [];
   for (const [account, folder, title, ago, prompts] of HISTORY) {
+    if (work.some((w) => w[2] === title)) continue;
     const cwd = FOLDERS[folder];
     const sessionId = uuid(title);
     const started = ago + (prompts.length * 9 + 4) * MIN;
@@ -281,20 +396,25 @@ function buildDemo() {
     }));
     lines.splice(1, 0, { type: 'ai-title', aiTitle: title, sessionId });
     lines.push(...replies(title, sessionId, now - ago));
-    const file = path.join(HOME, `.claude-${account}`, 'projects', cwd.replaceAll('/', '-'), `${sessionId}.jsonl`);
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n') + '\n');
-    // The page shows the file's modification time as the conversation's date.
-    utimesSync(file, new Date(now - ago), new Date(now - ago));
+    save(account, cwd, sessionId, ago, lines);
+  }
+  for (const [account, folder, title, ago, size, steps] of work) {
+    const cwd = FOLDERS[folder];
+    const sessionId = uuid(title);
+    save(account, cwd, sessionId, ago, workLines(title, cwd, sessionId, now - ago, size, steps));
   }
   // One favourite, so the Finder layout's sidebar shows what pinning a folder does.
   writeJson(path.join(STATE, 'pins.json'), { version: 1, sessions: [], folders: ['~/code/storefront'] });
+  // The what's new film shows the window an update opens: as if it had just come from 2.5.1.
+  if (FILM === 'whats-new') {
+    writeJson(path.join(STATE, 'update.json'), { latest: 'v2.7.2', checkedAt: now, justUpdated: { from: 'v2.5.1', to: 'v2.7.2', at: now - 5 * MIN } });
+  }
+  // The Paddock film adds a Codex account; its running sessions are returned, to be held open when filmed.
+  return FILM === 'paddock' ? buildCodex(now) : [];
 }
 
-// A few weeks of model replies before `end`, so the Usage view has a year that
-// looks lived in: mostly weekday working hours, three models, sizes like real
-// ones. Seeded by the title, so every run makes the same.
-function replies(title, sessionId, end) {
+// Random numbers seeded by a title, so every run makes the same.
+function seeded(title) {
   let seed = parseInt(createHash('sha1').update(title).digest('hex').slice(0, 8), 16);
   const random = () => {
     seed = (seed + 0x6d2b79f5) >>> 0;
@@ -303,7 +423,14 @@ function replies(title, sessionId, end) {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  const between = (low, high) => Math.round(low + random() * (high - low));
+  return { random, between: (low, high) => Math.round(low + random() * (high - low)) };
+}
+
+// A few weeks of model replies before `end`, so the Usage view has a year that
+// looks lived in: mostly weekday working hours, three models, sizes like real
+// ones. Seeded by the title, so every run makes the same.
+function replies(title, sessionId, end) {
+  const { random, between } = seeded(title);
   const span = between(3, 21);
   const out = [];
   for (let i = 0, count = between(25, 70); i < count; i++) {
@@ -331,17 +458,115 @@ function replies(title, sessionId, end) {
   return out;
 }
 
+// For the what's new film: sessions with real work in them, written in the order it
+// happened, as the loop check (src/loops.rs) reads them. One goes round in
+// circles; the two healthy ones give "your usual" something to go on, so only
+// the loop is flagged. A step is ['say', prompt], ['read', file],
+// ['edit', file, old text, new text], ['write', file, content] or ['run', command, error].
+// A title that matches a saved conversation above replaces it.
+const CALLBACK = 'src/auth/callback.ts';
+const SESSION_SETUP = 'src/auth/session.ts';
+const REDIRECT = '  return res.redirect(req.session.returnTo);';
+const REDIRECT_SAFE = "  return res.redirect(req.session?.returnTo ?? '/dashboard');";
+const EXCHANGE = '  const user = await exchangeCode(code);';
+const EXCHANGE_STATE = '  const user = await exchangeCode(code, { state });';
+const SAVE_OFF = '  saveUninitialized: false,';
+const SAVE_ON = '  saveUninitialized: true,';
+// The same failure each time, from a different line as the file changes.
+const redirectFails = (line) => ['run', 'npm test -- auth', `Exit code 1\nFAIL test/auth/callback.test.ts\n  ● OAuth callback › sends the user back where they started\n\n    TypeError: Cannot read properties of undefined (reading 'returnTo')\n\n      at handleCallback (src/auth/callback.ts:${line}:38)`];
+
+// Steps for a healthy session: per prompt, a look round, new files written, the tests passing.
+function healthy(prompts, folder) {
+  return prompts.flatMap((prompt, p) => [
+    ['say', prompt],
+    ...[1, 2, 3, 4, 5].map((n) => ['read', `src/${folder}/part${n}.ts`]),
+    ...[1, 2, 3, 4].map((n) => ['write', `src/${folder}/step${p + 1}-${n}.ts`, `// ${prompt}\nexport const step = ${n};\nexport const part = ${p + 1};\n`]),
+    ['run', 'npm test', ''],
+    ['run', 'npm run lint', ''],
+  ]);
+}
+
+const WORK = [
+  ['work', 'gateway', 'Fix the login redirect after OAuth', 35 * MIN, { base: 800000, grow: 50000 }, [
+    ['say', 'After signing in with Google, people land on a blank page instead of their dashboard. Find out why and fix it.'],
+    ['read', CALLBACK], ['read', SESSION_SETUP],
+    redirectFails(41),
+    ['edit', CALLBACK, REDIRECT, REDIRECT_SAFE], redirectFails(41),
+    ['edit', CALLBACK, EXCHANGE, EXCHANGE_STATE], redirectFails(44),
+    ['say', 'still getting the same error'],
+    ['read', CALLBACK],
+    ['edit', CALLBACK, EXCHANGE_STATE, EXCHANGE], ['edit', SESSION_SETUP, SAVE_OFF, SAVE_ON], redirectFails(41),
+    ['edit', CALLBACK, REDIRECT_SAFE, REDIRECT], redirectFails(41),
+    ['say', "that didn't work, it still doesn't redirect"],
+    ['read', CALLBACK],
+    ['edit', CALLBACK, REDIRECT, REDIRECT_SAFE], ['edit', SESSION_SETUP, SAVE_ON, SAVE_OFF], redirectFails(41),
+    ['edit', CALLBACK, EXCHANGE, EXCHANGE_STATE], redirectFails(44),
+    ['say', 'same error again. Can you step back and look at how the session is set up?'],
+    ['read', SESSION_SETUP], ['read', 'src/app.ts'],
+    ['edit', SESSION_SETUP, "  cookie: { sameSite: 'strict' },", "  cookie: { sameSite: 'lax' },"], redirectFails(44),
+    redirectFails(44),
+  ]],
+  ['client', 'gateway', 'Webhook retries with exponential backoff', 8 * DAY, { base: 30000, grow: 6000 }, healthy([
+    'Failed webhooks are retried straight away and flood the receiver. Add exponential backoff with jitter.',
+    'Cap it at six attempts and log the final failure'], 'webhooks')],
+  ['work', 'gateway', 'Trace slow requests on the orders endpoint', 3 * DAY, { base: 30000, grow: 6000 }, healthy([
+    'GET /orders takes over two seconds for large accounts. Find out where the time goes.',
+    'Add an index for the query you found and measure again'], 'orders')],
+];
+
+// A WORK session's transcript, ending at `end`: each step a minute or so after the
+// last; every step but a prompt is a model reply, with the conversation it re-reads
+// growing as it goes (`size`).
+function workLines(title, cwd, sessionId, end, size, steps) {
+  const { between } = seeded(title);
+  const out = [];
+  const at = (i) => new Date(end - (steps.length - i) * 70 * 1000).toISOString();
+  const user = (i, content, extra = {}) => out.push({ type: 'user', cwd, sessionId, timestamp: at(i), ...extra, message: { role: 'user', content } });
+  steps.forEach(([what, ...args], i) => {
+    if (what === 'say') {
+      user(i, args[0]);
+      if (!i) out.push({ type: 'ai-title', aiTitle: title, sessionId });
+      return;
+    }
+    const id = `toolu_${sessionId.slice(0, 8)}_${i}`;
+    const [file] = args;
+    const use = {
+      read: () => ({ name: 'Read', input: { file_path: `${cwd}/${file}` } }),
+      edit: () => ({ name: 'Edit', input: { file_path: `${cwd}/${file}`, old_string: args[1], new_string: args[2] } }),
+      write: () => ({ name: 'Write', input: { file_path: `${cwd}/${file}`, content: args[1] } }),
+      run: () => ({ name: 'Bash', input: { command: args[0] } }),
+    }[what]();
+    out.push({
+      type: 'assistant', cwd, sessionId, timestamp: at(i),
+      message: {
+        model: 'claude-opus-5-5', id: `msg_${sessionId.slice(0, 8)}_${i}`, role: 'assistant',
+        content: [{ type: 'tool_use', id, ...use }],
+        usage: {
+          input_tokens: between(2, 30),
+          output_tokens: between(150, 1400),
+          cache_creation_input_tokens: between(12000, 18000),
+          cache_read_input_tokens: size.base + i * size.grow,
+        },
+      },
+    });
+    const error = what === 'run' && args[1];
+    user(i, [{ type: 'tool_result', tool_use_id: id, content: error || (what === 'run' ? 'All tests passed.' : 'Done.'), is_error: Boolean(error) }]);
+  });
+  return out;
+}
+
 // ----------------------------------------------------------------- the tool
 
 // A clean environment: nothing from this shell (or from a Claude Code session
 // this may be run inside, which sets CLAUDE_* variables) reaches the tool.
 const TOOL_ENV = {
-  HOME, CC_SESSIONS_HOME: STATE, CC_SESSIONS_PORT: String(PORT), SHELL: '/bin/zsh', PATH: `${BIN}:/usr/bin:/bin`,
+  // /usr/sbin has lsof, which tells which conversation a running Codex holds open.
+  HOME, PADDOCK_HOME: STATE, PADDOCK_PORT: String(PORT), SHELL: '/bin/zsh', PATH: `${BIN}:/usr/bin:/bin:/usr/sbin`,
 };
 
 function tool(...args) {
   const out = spawnSync(EXE, args, { env: TOOL_ENV, cwd: HOME, encoding: 'utf8' });
-  if (out.status !== 0) throw new Error(`cc-sessions ${args.join(' ')} failed: ${out.stderr || out.stdout}`);
+  if (out.status !== 0) throw new Error(`paddock ${args.join(' ')} failed: ${out.stderr || out.stdout}`);
   return out.stdout.trim();
 }
 
@@ -482,7 +707,27 @@ function installOverlay() {
   stack.append(title, subtitle, line);
   card.append(stack);
 
-  layer.append(caption, ring, pointer, card);
+  // Headlines, for a film watched without sound: large and short, one at a time, at
+  // the top or the bottom. Words between *stars* are picked out in amber.
+  const headline = css(document.createElement('div'), {
+    position: 'absolute', left: '50%', 'max-width': '88%', padding: '15px 28px 17px', 'border-radius': '20px', 'box-sizing': 'border-box',
+    background: 'rgb(12 14 20 / 0.93)', color: '#ffffff', 'text-align': 'center', 'box-shadow': '0 14px 40px rgb(0 0 0 / 0.32)',
+    opacity: '0', transform: 'translateX(-50%) scale(0.92)', transition: 'opacity 150ms ease, transform 280ms cubic-bezier(0.2, 0.9, 0.3, 1.25)',
+  });
+  const big = css(document.createElement('div'), { font: `800 44px/1.1 ${face}`, 'letter-spacing': '-0.03em', 'white-space': 'nowrap' });
+  const small = css(document.createElement('div'), { font: `500 22px/1.3 ${face}`, color: '#c9c9cf', 'margin-top': '7px' });
+  headline.append(big, small);
+  const amber = () => css(document.createElement('span'), { color: '#ffb547' });
+  const words = (text) => text.split('*').map((part, i) => {
+    if (i % 2 === 0) return document.createTextNode(part);
+    const span = amber();
+    span.textContent = part;
+    return span;
+  });
+  // The page under the overlay, zoomed: how far, and moved by how much.
+  let zoomed = { s: 1, x: 0, y: 0 };
+
+  layer.append(caption, ring, pointer, headline, card);
   document.body.append(layer);
   layer.showPopover();
   // A title glows from white into a soft blue and violet; plain ones stay white.
@@ -523,7 +768,10 @@ function installOverlay() {
       place(ring, x, y, 'scale(1.15)');
     },
     // Shows a card, or changes the one showing: the old words fade out and the new ones in.
+    // `see` lets the page show through, dimmed and blurred.
     card(words) {
+      card.style.background = words.see ? 'rgb(8 10 14 / 0.8)' : '#000000';
+      card.style.backdropFilter = words.see ? 'blur(12px)' : 'none';
       if (!carded) {
         subtitle.style.opacity = '0';
         line.style.opacity = '0';
@@ -544,6 +792,53 @@ function installOverlay() {
     uncard() {
       card.style.opacity = '0';
       carded = false;
+    },
+    // A headline ({ text, sub, at: 'top' or 'bottom', count }), or none. With `count`
+    // ({ to, decimals, suffix }) the amber number runs up to `to` as it appears.
+    headline(next) {
+      const show = () => {
+        if (!next) return;
+        big.replaceChildren(...words(next.text || ''));
+        if (next.count) {
+          const number = amber();
+          big.prepend(number);
+          const began = performance.now();
+          const tick = (now) => {
+            const t = Math.min(1, (now - began) / 900);
+            number.textContent = `${(next.count.to * (1 - (1 - t) ** 3)).toFixed(next.count.decimals || 0)}${next.count.suffix || ''}`;
+            if (t < 1) requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        }
+        small.textContent = next.sub || '';
+        small.style.display = next.sub ? 'block' : 'none';
+        headline.style.top = next.at === 'bottom' ? 'auto' : '34px';
+        headline.style.bottom = next.at === 'bottom' ? '40px' : 'auto';
+        headline.style.opacity = '1';
+        headline.style.transform = 'translateX(-50%) scale(1)';
+      };
+      const showing = headline.style.opacity === '1';
+      headline.style.opacity = '0';
+      headline.style.transform = 'translateX(-50%) scale(0.92)';
+      if (showing) setTimeout(show, 150); else show();
+    },
+    // Zooms the page in `s` times on the middle of `box` (measured as it is now), kept
+    // inside the window; no box, or s = 1, zooms back out.
+    zoom(box, s, ms) {
+      const page = document.body;
+      page.style.transformOrigin = '0 0';
+      page.style.transition = `transform ${ms}ms cubic-bezier(0.3, 0.7, 0.2, 1)`;
+      if (!box || s === 1) {
+        zoomed = { s: 1, x: 0, y: 0 };
+        page.style.transform = '';
+        return;
+      }
+      // Where the box's middle is on the page itself, without the zoom already on.
+      const cx = (box.x + box.w / 2 - zoomed.x) / zoomed.s;
+      const cy = (box.y + box.h / 2 - zoomed.y) / zoomed.s;
+      const keep = (v, size) => Math.min(0, Math.max(size - size * s, v));
+      zoomed = { s, x: keep(innerWidth / 2 - cx * s, innerWidth), y: keep(innerHeight / 2 - cy * s, innerHeight) };
+      page.style.transform = `translate(${zoomed.x}px, ${zoomed.y}px) scale(${s})`;
     },
     caption(text) {
       caption.style.opacity = '0';
@@ -572,6 +867,7 @@ function installOverlay() {
 const KEYS = {
   space: [' ', 'Space', 32, ' '],
   escape: ['Escape', 'Escape', 27],
+  '2': ['2', 'Digit2', 50, '2'],
   '3': ['3', 'Digit3', 51, '3'],
   ',': [',', 'Comma', 188, ','],
 };
@@ -589,6 +885,26 @@ function actor(page) {
     caption: (text) => js`__demo.caption(${text})`,
     card: (words) => js`__demo.card(${words})`,
     uncard: () => js`__demo.uncard()`,
+    headline: (words) => js`__demo.headline(${words})`,
+    raise: () => js`__demo.raise()`,
+    run: (expression) => page.evaluate(expression),
+    // The text of the first `selector` element containing `text` (or of `inside`, within it).
+    text: (selector, text, inside) => js`(() => {
+      let el = [...document.querySelectorAll(${selector})].find((e) => e.textContent.includes(${text}));
+      if (el && ${inside}) el = el.querySelector(${inside});
+      return el ? el.textContent.trim() : '';
+    })()`,
+    // Zooms in on an element, `scale` times, taking `over` milliseconds; zoomOut goes back.
+    async zoom(selector, { text, inside, scale = 1.6, over = 650 } = {}) {
+      const box = await js`__demo.box(${selector}, ${text || ''}, ${inside || ''})`;
+      if (!box) throw new Error(`Nothing on the page to zoom in on for ${selector} ${text || ''}`);
+      await js`__demo.zoom(${box}, ${scale}, ${over})`;
+      await sleep(over);
+    },
+    async zoomOut(over = 550) {
+      await js`__demo.zoom(null, 1, ${over})`;
+      await sleep(over);
+    },
     async start() {
       await page.evaluate(`(${installOverlay})()`);
       await js`__demo.point(${at.x}, ${at.y}, 0)`;
@@ -628,6 +944,15 @@ function actor(page) {
       await mouse('mousePressed', { button: 'left', clickCount: 1 });
       await sleep(70);
       await mouse('mouseReleased', { button: 'left', clickCount: 1 });
+      await js`__demo.raise()`;
+      await sleep(140);
+    },
+    async rightClick(selector, where = {}) {
+      await me.moveTo(selector, where);
+      await js`__demo.press(${at.x}, ${at.y})`;
+      await mouse('mousePressed', { button: 'right', clickCount: 1 });
+      await sleep(70);
+      await mouse('mouseReleased', { button: 'right', clickCount: 1 });
       await js`__demo.raise()`;
       await sleep(140);
     },
@@ -790,6 +1115,173 @@ async function tour(a, scene) {
   await a.hold(3200);
 }
 
+// The what's new film: fifteen seconds for a feed, where most people watch without
+// sound and scroll on within twenty. So it is square, has no voice but headlines,
+// opens on its point, and cuts every two or three seconds.
+const LOOP = 'Fix the login redirect after OAuth';
+
+// Before the take: the api-gateway folder in the List view, zoomed in on what one
+// prompt of the looping session cost, so the very first frame is the hook.
+async function setupWhatsNew(a) {
+  await a.click('.sb-item', { text: 'All folders' });
+  await a.dblclick('.cell', { text: '~/code', inside: '.ic-wrap' });
+  await a.dblclick('.cell', { text: 'api-gateway', inside: '.ic-wrap' });
+  await a.key('2', true);
+  await a.waitFor(`document.querySelector('.list .row')`, 'the List view');
+  // Picked, so the row stands out, and can be followed to the top when the order changes.
+  await a.click('.list .row', { text: LOOP, fx: 0.3 });
+  await a.moveTo('.list .row', { text: LOOP, inside: 'td:last-child', fx: 0.15, fy: 0.9 });
+  await a.zoom('.list .row', { text: LOOP, inside: 'td:last-child', scale: 2.1, over: 0 });
+  await a.hold(400);
+}
+
+async function tourWhatsNew(a, scene) {
+  // What each prompt of the looping session cost, as the page shows it ("9.1M"), counted up in the headline.
+  const cost = await a.text('.list .row', LOOP, 'td:last-child');
+  const value = parseFloat(cost);
+
+  await scene('hook');
+  await a.headline({ count: { to: value, decimals: 1, suffix: `${cost.replace(/[\d.]/g, '')} tokens` }, sub: 'per prompt, in one Claude Code session', at: 'bottom' });
+  await a.hold(2400);
+
+  await scene('per prompt');
+  await a.headline({ text: 'What did *each prompt* cost?', sub: 'New: tokens per prompt, for every session', at: 'bottom' });
+  await a.zoomOut();
+  await a.click('.list th', { text: 'Per prompt' });
+  await a.hold(1300);
+
+  await scene('loops');
+  await a.headline({ text: 'Stuck in a loop? *It notices.*', sub: 'The same error after every fix, edits undone', at: 'bottom' });
+  await a.key('space');
+  await a.waitFor(`document.querySelector('#ql .loop-note')`, 'the reasons in Quick Look');
+  await a.zoom('#ql .loop-note', { scale: 1.5, over: 550 });
+  await a.hold(1700);
+
+  await scene('editor');
+  await a.key('escape');
+  await a.zoomOut(350);
+  await a.headline({ text: 'Open any session *in your editor*' });
+  await a.rightClick('.list .row', { text: LOOP, fx: 0.3 });
+  await a.waitFor(`!document.querySelector('#menu').hidden`, 'the right-click menu');
+  await a.moveTo('#menu [role=menuitem]', { text: 'Open in', over: 450 });
+  await a.hold(1300);
+  await a.key('escape');
+
+  await scene('updates');
+  await a.headline({ text: 'It *updates itself*', sub: 'and tells you what changed' });
+  // The window an update opens, as the page shows it the first time after one.
+  await a.run(`localStorage.removeItem('cc-update-seen'); refresh()`);
+  await a.waitFor(`document.querySelector('dialog.cc-news[open]')`, "the What's new window");
+  await a.raise();
+  await a.hold(2000);
+
+  await scene('end');
+  await a.headline(null);
+  await a.card({ title: 'cc-sessions 2.7', subtitle: 'Free and open source  ·  macOS  ·  Windows  ·  Linux', line: 'github.com/barath-dev/cc-sessions', glow: true, see: true });
+  await a.hold(2400);
+}
+
+// The Paddock film's footage: stills of the real page, each with where things are on
+// it (in CSS pixels), written to `shots` with shots.json for paddock-film/film.mjs to
+// make the film from. Nothing is drawn on the page: the film adds its own graphics.
+const APPLE_PAY = 'Add Apple Pay to the checkout';
+const MIGRATE = 'Migrate checkout to the new payments API';
+const FLAKY = 'Fix the flaky cart tests';
+const BADGE = 'Fix cart badge count on mobile';
+
+async function capturePaddock({ page, open, openFinder, shots }) {
+  mkdirSync(shots, { recursive: true });
+  const js = (strings, ...values) => page.evaluate(String.raw({ raw: strings }, ...values.map((v) => JSON.stringify(v))));
+  // The first `selector` element containing `text` (or `inside`, a selector within it).
+  const find = `(selector, text, inside) => {
+    let el = [...document.querySelectorAll(selector)].find((e) => !text || e.textContent.includes(text));
+    if (el && inside) el = el.querySelector(inside);
+    return el;
+  }`;
+  const el = (selector, text, inside) => `(${find})(${[selector, text, inside].map((v) => JSON.stringify(v)).join(', ')})`;
+  // With `all`, every `inside` element in it, each with its text.
+  const box = (selector, text = '', inside = '', all = false) => page.evaluate(`(() => {
+    const rect = (e) => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, text: e.textContent.trim() }; };
+    if (${all}) {
+      const outer = ${el(selector, text, '')};
+      return outer ? [...outer.querySelectorAll(${JSON.stringify(inside)})].map(rect) : null;
+    }
+    const el = ${el(selector, text, inside)};
+    return el ? rect(el) : null;
+  })()`);
+  const click = async (selector, text = '', inside = '') => {
+    const at = await box(selector, text, inside);
+    if (!at) throw new Error(`Nothing to click for ${selector} ${text}`);
+    await page.evaluate(`${el(selector, text, inside)}.click()`);
+    return at;
+  };
+  const waitFor = async (expression, what) => {
+    for (let i = 0; i < 150; i++) {
+      if (await page.evaluate(expression)) return;
+      await sleep(100);
+    }
+    throw new Error(`Timed out waiting for ${what}.`);
+  };
+  const list = [];
+  // A still, with the boxes named in `marks` ({ name: [selector, text, inside] }) measured as it is shot.
+  const still = async (name, marks = {}, extra = {}) => {
+    await sleep(350);
+    const boxes = {};
+    for (const [key, args] of Object.entries(marks)) {
+      boxes[key] = await box(...args);
+      if (!boxes[key]) throw new Error(`Shot ${name}: nothing found for ${key}`);
+    }
+    const shot = await page.send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(path.join(shots, `${name}.png`), Buffer.from(shot.data, 'base64'));
+    list.push({ name, file: `${name}.png`, boxes, ...extra });
+    log(`Shot ${name}`);
+  };
+  const row = (title, inside = '') => ['#list .row', title, inside];
+
+  await open();
+  // The stand-in Codex sessions are found once the page has asked again.
+  await waitFor(`[...document.querySelectorAll('#list .row')].some((r) => r.textContent.includes(${JSON.stringify(APPLE_PAY)}))`, 'the running Codex sessions');
+
+  // 1. One folder: Claude Code and Codex sessions side by side.
+  await click('.side button, .side a, .side [role=button], .side li', 'storefront');
+  await waitFor(`document.querySelectorAll('#list .row').length > 0 && ![...document.querySelectorAll('#list .row')].some((r) => r.textContent.includes('Rate limiting'))`, 'the storefront folder');
+  await still('folder', { claude: row(MIGRATE), codex: row(APPLE_PAY), list: ['#list'] });
+
+  // 2. Everything: all accounts, both tools.
+  await click('.side button, .side a, .side [role=button], .side li', 'All sessions');
+  await waitFor(`[...document.querySelectorAll('#list .row')].some((r) => r.textContent.includes('Rate limiting'))`, 'all sessions');
+  await still('all', { chips: ['.chips, .filters, [role=group]', 'codex-work'], codexChip: ['button, .chip', 'codex-work'], list: ['#list'] });
+
+  // 3. A search, a letter at a time, then a Codex conversation picked.
+  const search = 'input[type=search]';
+  await js`document.querySelector(${search}).focus()`;
+  const word = 'cart';
+  for (let n = 1; n <= word.length; n++) {
+    await page.send('Input.insertText', { text: word[n - 1] });
+    await still(`search-${n}`, { search: [search] }, { typed: word.slice(0, n) });
+  }
+  await still('search', { search: [search], claude: row(BADGE), codex: row(FLAKY), list: ['#list'] });
+  await click('#list .row', FLAKY, '.row-main');
+  await waitFor(`!document.querySelector('#panel').hidden`, 'the details panel');
+  await still('picked', { codex: row(FLAKY), panel: ['#panel'], resume: ['#panel button', 'Resume'] });
+
+  // 4. Usage, in the Finder layout: tokens from both tools, by model.
+  await openFinder();
+  await click('.sb-item', 'Usage');
+  await waitFor(`[...document.querySelectorAll('.usage-row')].length > 1`, 'the Usage view');
+  const byModel = ['.usage-row .card', 'By model'];
+  await page.evaluate(`${el(...byModel, '')}.scrollIntoView({ block: 'center' })`);
+  await still('usage', { byModel, bars: [...byModel, '.bar-track', true], names: [...byModel, '.bar-name', true], values: [...byModel, '.bar-value', true] });
+
+  writeJson(path.join(shots, 'shots.json'), { view: VIEW, scale: SCALE, shots: list });
+}
+
+const FILMS = {
+  launch: { narration: NARRATION, tour, target: 'demo.mp4' },
+  'whats-new': { narration: null, setup: setupWhatsNew, tour: tourWhatsNew, target: 'whats-new.mp4' },
+  paddock: { capture: capturePaddock },
+};
+
 // ----------------------------------------------------------------- narration
 
 // Runs a program to its end and returns what it printed, or throws with what it said went wrong.
@@ -805,9 +1297,10 @@ function run(program, args, what) {
 // the model takes a few seconds to load. Returns null where it is not set up.
 function speakWithKokoro(dir) {
   if (!existsSync(KOKORO.python)) return null;
-  const files = NARRATION.map((_, i) => path.join(dir, `said${i + 1}.wav`));
+  const lines = FILMS[FILM].narration;
+  const files = lines.map((_, i) => path.join(dir, `said${i + 1}.wav`));
   run(KOKORO.python, [KOKORO.script, '--voice', KOKORO.voice, '--speed', String(KOKORO.speed),
-    ...NARRATION.flatMap((text, i) => [text, files[i]])], 'Speaking the narration with Kokoro (speak.py)');
+    ...lines.flatMap((text, i) => [text, files[i]])], 'Speaking the narration with Kokoro (speak.py)');
   return { files, by: `Kokoro's ${KOKORO.voice} voice (docs/record-demo/.tts)` };
 }
 
@@ -816,7 +1309,7 @@ function speakWithSay(dir) {
   const voices = spawnSync(SAY, ['-v', '?'], { encoding: 'utf8' });
   if (voices.error || voices.status !== 0) return null;
   const voice = SAY_VOICE.names.find((name) => new RegExp(`^${name}\\b`, 'm').test(voices.stdout));
-  const files = NARRATION.map((text, i) => {
+  const files = FILMS[FILM].narration.map((text, i) => {
     const file = path.join(dir, `said${i + 1}.aiff`);
     run(SAY, [...(voice ? ['-v', voice] : []), '-r', String(SAY_VOICE.wordsPerMinute), '-o', file, text], `${SAY} on line ${i + 1}`);
     return file;
@@ -824,7 +1317,7 @@ function speakWithSay(dir) {
   return { files, by: `the ${voice || 'default'} voice of macOS's \`${SAY}\` (run docs/record-demo/setup-voice.sh for the Kokoro voice)` };
 }
 
-// Speaks each line of NARRATION into a file, tidies it and measures it. Returns
+// Speaks each line of the film's narration into a file, tidies it and measures it. Returns
 // the clips in order, or null where there is nothing to speak them with.
 function speak(dir) {
   mkdirSync(dir, { recursive: true });
@@ -914,9 +1407,16 @@ function compose(seconds, swells, file) {
   filter(left); filter(right);
   room(left, [43, 59, 71, 89]);
   room(right, [47, 61, 79, 97]);
+  writeWav(file, left, right);
+}
+
+// A 16-bit stereo WAV of the two channels, about -6 dB at the loudest.
+function writeWav(file, left, right) {
+  const rate = SOUND.rate;
+  const total = left.length;
   let peak = 0;
   for (let n = 0; n < total; n++) peak = Math.max(peak, Math.abs(left[n]), Math.abs(right[n]));
-  const gain = peak ? 0.5 / peak : 0;   // about -6 dB at the loudest
+  const gain = peak ? 0.5 / peak : 0;
   const pcm = Buffer.alloc(44 + total * 4);
   pcm.write('RIFF', 0); pcm.writeUInt32LE(36 + total * 4, 4); pcm.write('WAVE', 8);
   pcm.write('fmt ', 12); pcm.writeUInt32LE(16, 16); pcm.writeUInt16LE(1, 20); pcm.writeUInt16LE(2, 22);
@@ -927,6 +1427,73 @@ function compose(seconds, swells, file) {
     pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, right[n] * gain)) * 32767), 46 + n * 4);
   }
   writeFileSync(file, pcm);
+}
+
+// The what's new film's music, written here like the pad but quick, for a clip with no
+// voice: 120 beats a minute, a soft kick on each beat, a closed hat between, a round
+// bass note, a plucked chord on beats one and three, and a short rush of noise into
+// each cut (`hits`, in seconds). It starts on the first beat and fades at the end.
+function beat(seconds, hits, file) {
+  const rate = SOUND.rate;
+  const total = Math.ceil(seconds * rate);
+  const left = new Float32Array(total);
+  const right = new Float32Array(total);
+  const BEAT = 0.5;
+  const tau = 2 * Math.PI;
+  const CHORDS = [
+    [261.63, 329.63, 392.0, 493.88],   // C major 7
+    [220.0, 261.63, 329.63, 392.0],    // A minor 7
+    [174.61, 220.0, 261.63, 329.63],   // F major 7
+    [196.0, 246.94, 293.66, 392.0],    // G
+  ];
+  const ROOTS = [65.41, 55.0, 43.65, 49.0];
+  let seed = 1;
+  const noise = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 2147483648 - 1; };
+  let high = 0;
+  let last = 0;
+  for (let n = 0; n < total; n++) {
+    const t = n / rate;
+    const count = Math.floor(t / BEAT);
+    const into = t - count * BEAT;
+    const bar = Math.floor(count / 4);
+    // The kick: a sine falling from 120 Hz to 45 Hz.
+    const kick = Math.sin(tau * (45 * into + 75 * 0.03 * (1 - Math.exp(-into / 0.03)))) * Math.exp(-into / 0.12);
+    // The hat: noise with its lows taken out, on the off-beat.
+    const x = noise();
+    high = 0.6 * (high + x - last);
+    last = x;
+    const off = into - BEAT / 2;
+    const hat = off >= 0 ? high * Math.exp(-off / 0.025) : 0;
+    const bass = Math.sin(tau * ROOTS[bar % 4] * t) * Math.exp(-into / 0.35);
+    const plucked = (t - bar * 4 * BEAT) % (2 * BEAT);
+    let l = 0;
+    let r = 0;
+    for (const f of CHORDS[bar % 4]) {
+      const tone = (detune) => {
+        const p = tau * f * detune * t;
+        return (Math.sin(p) + 0.35 * Math.sin(2 * p) + 0.15 * Math.sin(3 * p)) * Math.exp(-plucked / 0.45);
+      };
+      l += tone(0.998);
+      r += tone(1.002);
+    }
+    let rush = 0;
+    for (const at of hits) {
+      const d = at - t;
+      if (d > 0 && d < 0.35) rush += x * ((0.35 - d) / 0.35) ** 2;
+    }
+    const edge = Math.min(1, t / 0.02, (seconds - t) / 0.8);
+    const mid = 0.9 * kick + 0.5 * bass + 0.3 * hat + 0.25 * rush;
+    left[n] = (mid + 0.11 * l) * Math.max(0, edge);
+    right[n] = (mid + 0.11 * r) * Math.max(0, edge);
+  }
+  writeWav(file, left, right);
+}
+
+// Music alone, `seconds` long, brought to the wanted loudness.
+function levelMusic(music, seconds, file) {
+  run(FFMPEG, ['-hide_banner', '-nostats', '-y', '-i', music, '-af',
+    `atrim=end=${seconds.toFixed(6)},alimiter=limit=0.5:level=disabled,loudnorm=I=${SOUND.loudness}:TP=${SOUND.peak}:LRA=${SOUND.rangeWithMusic},aresample=${SOUND.rate}`,
+    '-c:a', 'pcm_s16le', file], `Levelling the music with ${FFMPEG}`);
 }
 
 // Lays the clips on one track at the times they are said, adds the music bed
@@ -1085,17 +1652,21 @@ async function main() {
     if (!existsSync(file)) throw new Error(`${path.relative(REPO, file)} is missing. Run: cargo build --release`);
   }
   if (!existsSync(CHROME)) throw new Error(`Google Chrome was not found at ${CHROME}. Set CHROME to its path.`);
+  const film = FILMS[FILM];
+  if (!film) throw new Error(`There is no film called ${FILM}. Try: ${Object.keys(FILMS).join(', ')}`);
+  if (STILL_ONLY && FILM !== 'launch') throw new Error('--still is the launch film\'s; leave out --film.');
 
   const docs = path.join(REPO, 'docs');
-  const work = mkdtempSync(path.join(process.env.DEMO_WORK_DIR || os.tmpdir(), 'cc-sessions-demo-'));
+  const target = OUT ? path.resolve(OUT) : path.join(docs, film.target || '');
+  const work = mkdtempSync(path.join(process.env.DEMO_WORK_DIR || os.tmpdir(), 'paddock-demo-'));
   let page;
   try {
     // Spoken first: the stand-in sessions made next only live for two minutes.
-    const clips = STILL_ONLY ? null : speak(path.join(work, 'narration'));
+    const clips = STILL_ONLY || !film.narration ? null : speak(path.join(work, 'narration'));
     // A server left over from an earlier run would hold the port and the old data.
     if (existsSync(MARKER)) stopTool();
     resetHome();
-    buildDemo();
+    const held = buildDemo();
     log(tool('--no-open'));
     const token = readFileSync(path.join(STATE, 'ui-token'), 'utf8').trim();
 
@@ -1103,7 +1674,8 @@ async function main() {
     // The page writes dates the way the browser's language does; pin it so every machine records the same.
     await page.send('Emulation.setLocaleOverride', { locale: 'en-US' });
     await page.send('Page.addScriptToEvaluateOnNewDocument', {
-      source: `try { localStorage.setItem('cc-tab', 'sessions'); localStorage.setItem('cc-theme', 'light'); } catch {}`,
+      // The update window is shown when the tour asks for it, not as the page opens.
+      source: `try { localStorage.setItem('cc-tab', 'sessions'); localStorage.setItem('cc-theme', 'light'); localStorage.setItem('cc-update-seen', 'v2.7.2'); } catch {}`,
     });
     const metrics = (view, scale) => page.send('Emulation.setDeviceMetricsOverride',
       { width: view.width, height: view.height, deviceScaleFactor: scale, mobile: false });
@@ -1120,37 +1692,58 @@ async function main() {
     };
     const a = actor(page);
 
-    // The still: every session, with one picked so its details show. Reduced motion stops the Working dots mid-pulse.
-    await metrics(STILL, STILL.scale);
-    await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
-    await open();
-    await page.evaluate(`[...document.querySelectorAll('#list .row')]
-      .find((row) => row.querySelector('.row-name').textContent === ${JSON.stringify(LOOK_AT)}).querySelector('.row-main').click()`);
-    await a.waitFor(`!document.querySelector('#panel').hidden`, 'the details panel');
-    await sleep(500);
-    const still = await page.send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(path.join(docs, 'demo.png'), Buffer.from(still.data, 'base64'));
-    log('Wrote docs/demo.png');
-    if (STILL_ONLY) return;
+    // The still, with the launch film: every session, with one picked so its details show. Reduced motion stops the Working dots mid-pulse.
+    if (FILM === 'launch') {
+      await metrics(STILL, STILL.scale);
+      await page.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+      await open();
+      await page.evaluate(`[...document.querySelectorAll('#list .row')]
+        .find((row) => row.querySelector('.row-name').textContent === ${JSON.stringify(LOOK_AT)}).querySelector('.row-main').click()`);
+      await a.waitFor(`!document.querySelector('#panel').hidden`, 'the details panel');
+      await sleep(500);
+      const still = await page.send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(path.join(docs, 'demo.png'), Buffer.from(still.data, 'base64'));
+      log('Wrote docs/demo.png');
+      if (STILL_ONLY) return;
+      await page.send('Emulation.setEmulatedMedia', { features: [] });
+    }
 
-    await page.send('Emulation.setEmulatedMedia', { features: [] });
     await metrics(VIEW, SCALE);
+    // The Paddock film is filmed as stills here and made into a film by paddock-film/film.mjs.
+    if (film.capture) {
+      holdCodex(held);
+      const shots = path.join(HERE, 'paddock-film', '.shots');
+      rmSync(shots, { recursive: true, force: true });
+      await film.capture({ a, page, open, openFinder, shots });
+      if (!STILLS_ONLY) {
+        const { makeFilm } = await import('./paddock-film/film.mjs');
+        await makeFilm({ cut: option('--cut') || 'both', draft: process.argv.includes('--draft'), out: OUT ? path.resolve(OUT) : undefined });
+      }
+      return;
+    }
     await openFinder();
     await a.start();
-    // The film opens on black, with the name.
-    await a.card({ title: 'cc-sessions' });
+    // The launch film opens on black with the name; the what's new film on its first picture.
+    if (film.setup) await film.setup(a);
+    else await a.card({ title: 'cc-sessions' });
     await sleep(900);
     const time = timekeeper(clips);
     const take = await record(page, path.join(work, 'frames'), () => {
       time.start();
-      return tour(a, time.scene);
+      return film.tour(a, time.scene);
     });
     log(`Recorded ${take.seconds.toFixed(1)}s in ${take.frames.length} frames. Scenes start at:\n${time.table(take.seconds)}`);
     if (page.problems.length) log(`Page errors:\n${page.problems.join('\n')}`);
 
     let narration = null;
-    if (clips) {
-      const length = frameCount(take.seconds) / VIDEO.fps;
+    const length = frameCount(take.seconds) / VIDEO.fps;
+    if (!film.narration && !NO_MUSIC) {
+      const music = path.join(work, 'music.wav');
+      beat(length, time.scenes.slice(1).map((s) => s.at), music);
+      narration = path.join(work, 'track.wav');
+      levelMusic(music, length, narration);
+      log('Music: a 120 bpm beat written by beat(), with a rush into each cut.');
+    } else if (clips) {
       let music = null;
       if (!NO_MUSIC) {
         music = path.join(work, 'narration', 'music.wav');
@@ -1160,8 +1753,8 @@ async function main() {
       narration = path.join(work, 'narration', 'track.wav');
       mixSound(time.scenes.map((s) => s.speech), music, length, narration);
     }
-    await encode(take, narration, path.join(docs, 'demo.mp4'));
-    log(`Wrote docs/demo.mp4 (${(statSync(path.join(docs, 'demo.mp4')).size / 1e6).toFixed(2)} MB)`);
+    await encode(take, narration, target);
+    log(`Wrote ${target.startsWith(REPO) ? path.relative(REPO, target) : target} (${(statSync(target).size / 1e6).toFixed(2)} MB)`);
   } finally {
     if (page) await page.close();
     stopTool();

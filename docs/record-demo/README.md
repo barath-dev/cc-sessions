@@ -68,3 +68,55 @@ pushes the music down while the voice speaks (ffmpeg's `sidechaincompress`), tak
 tops off the loudest syllables with a limiter, and levels the result to about -16 LUFS.
 The script prints how far under the voice the bed sits; `MUSIC.level` near the top moves
 it.
+
+## The what's new film
+
+`--film whats-new` makes a 15-second square clip (1080×1080) of what is new in 2.6 and
+2.7, for a social feed rather than the README. It is made to be watched without sound:
+no voice, short headlines on the picture (`a.headline()`), zooms on what matters
+(`a.zoom()`), a cut every two or three seconds and a beat written by `beat()`. It opens on
+its point: what each prompt of one session cost. It makes no still, and writes
+`docs/whats-new.mp4`, or wherever `--out` says:
+
+```sh
+node docs/record-demo/record.mjs --film whats-new --out ~/Desktop/whats-new.mp4
+```
+
+Its demo home adds three sessions with real work in them (`WORK`, written by
+`workLines()`), since the loop check only judges sessions with edits, commands and enough
+tokens: one goes round in circles, the same test failing after every fix, and two healthy
+ones give "your usual" something to go on. It also says the tool was just updated from
+2.5.1, so the "Updated to" window can be shown. Its scenes are `tourWhatsNew()`.
+
+## The Paddock film
+
+`--film paddock` makes the film of 2.8 (`docs/paddock.mp4` in the top-level README, and
+the launch post). It is made differently from the others: `record.mjs` only takes stills
+of the real page, and `paddock-film/` makes the film from them.
+
+```sh
+cargo build --release
+node docs/record-demo/record.mjs --film paddock [--cut long|short|both] [--draft] [--out DIR]
+```
+
+- `record.mjs --film paddock` adds a Codex account to the demo home (`CODEX`: rollouts as
+  Codex writes them, two of them held open by a stand-in `codex` so they show as working),
+  takes stills of the page at four times its size with where things are on them
+  (`capturePaddock()`), and writes them to `paddock-film/.shots`. `--stills` stops there.
+- `paddock-film/film.mjs` draws every frame of `stage.html` on its own clock in headless
+  Chrome: the stills in a window on a dark stage, a camera on springs, headlines, labels, a
+  pointer and the end card. Frames are drawn at twice the size and 120 a second, and each
+  frame of the film is the blend of two, so moves get motion blur. It can be run on its own
+  once the stills are there: `node docs/record-demo/paddock-film/film.mjs --cut long --draft`.
+- `paddock-film/score.js` writes the sound in Chrome's offline Web Audio, with no samples:
+  a pad, drums, bass, a riser and an impact, and effects (whooshes, ticks, pops) on the
+  picture's cues. `film.mjs` mixes and masters it to -14 LUFS with true peaks under -1 dB,
+  and prints the loudness, the peak and how much is lost folded to mono.
+- `paddock-film/timeline.js` holds every time both use, in beats. There are two cuts:
+  `short` (15 s, 160 beats a minute) opens on the app; `long` (25 s, 128) opens on an
+  abstract intro of the sessions the author had open (`OPEN`) gathering into one window.
+
+Each cut and shape (4:5 and 1:1) gets an mp4, a contact sheet and thumbnails; the films
+go to the Desktop unless `--out` says otherwise. The fonts (Inter and JetBrains Mono, under
+the SIL Open Font License) are fetched once into `paddock-film/.fonts`. `--draft` takes
+about a minute; a finished cut takes about 30 minutes for each shape.

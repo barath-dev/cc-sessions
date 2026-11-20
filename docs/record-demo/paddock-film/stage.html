@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Paddock film</title>
+<style>
+  @font-face { font-family: 'Inter'; src: url('/fonts/inter.woff2') format('woff2'); font-weight: 100 900; font-display: block; }
+  @font-face { font-family: 'JetBrains Mono'; src: url('/fonts/jetbrains-mono.woff2') format('woff2'); font-weight: 500; font-display: block; }
+  html, body { margin: 0; padding: 0; background: #06070a; overflow: hidden; }
+  * { box-sizing: border-box; }
+  #stage { position: relative; overflow: hidden; background: #06070a; font-family: 'Inter', sans-serif; font-optical-sizing: auto;
+    -webkit-font-smoothing: antialiased; color: #f5f5f7; }
+  .layer { position: absolute; inset: 0; pointer-events: none; }
+  #aurora { filter: blur(40px); }
+  .glow { position: absolute; border-radius: 50%; }
+  #camera { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+  #window { position: absolute; left: 0; top: 0; border-radius: 16px; overflow: hidden; background: #eef0f3; transform-origin: 50% 50%;
+    box-shadow: 0 0 0 1px rgb(255 255 255 / 0.07), 0 1px 2px rgb(0 0 0 / 0.4), 0 10px 30px rgb(0 0 0 / 0.45), 0 40px 120px rgb(0 0 0 / 0.6); }
+  #titlebar { position: relative; display: flex; align-items: center; justify-content: center; background: linear-gradient(#f4f5f7, #e6e8ec);
+    border-bottom: 1px solid #d5d8de; color: #565d69; font-weight: 600; letter-spacing: -0.01em; }
+  #lights { position: absolute; display: flex; }
+  #lights i { display: block; border-radius: 50%; }
+  #content { position: relative; overflow: hidden; }
+  #content img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; visibility: hidden; }
+  .mark { position: absolute; transform-origin: 0 0; }
+  .ring { position: absolute; border-radius: 10px; }
+  .cover { position: absolute; background: #ffffff; transform-origin: 100% 50%; }
+  .pill { position: absolute; white-space: nowrap; display: flex; align-items: center; font-weight: 650; letter-spacing: -0.01em;
+    border-radius: 999px; color: #ffffff; transform-origin: 0 50%; }
+  .pill b { display: block; border-radius: 50%; }
+  #pointer { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  .headline { position: absolute; left: 0; right: 0; text-align: center; font-weight: 720; letter-spacing: -0.045em; }
+  .line { display: block; white-space: nowrap; }
+  .word { display: inline-block; padding: 0 0.03em 0.08em; }
+  .claude { background: linear-gradient(100deg, #ffd29a, #f59a4a 55%, #e9783a); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .done { background: linear-gradient(100deg, #c8ffd9, #4ade80 55%, #22b35e); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .waiting { background: linear-gradient(100deg, #ffe0a3, #f5a524 55%, #e08a0b); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .codex { background: linear-gradient(100deg, #b5fff1, #39d5c0 55%, #1fae9e); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .both { background: linear-gradient(95deg, #ffc98a 0%, #f7a35c 30%, #6fe0cf 70%, #a8f5ea 100%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  #end { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+  #names { position: relative; display: grid; place-items: center; }
+  #names > div { grid-area: 1 / 1; white-space: nowrap; font-weight: 760; letter-spacing: -0.055em; }
+  #names span { display: inline-block; }
+  #name span { color: transparent; background-image: linear-gradient(100deg, #ffffff 0%, #ffffff 44%, #ffd7a8 47.5%, #ffffff 50%, #a8f5ea 52.5%, #ffffff 56%, #ffffff 100%);
+    background-repeat: no-repeat; -webkit-background-clip: text; background-clip: text; padding: 0 0.02em; }
+  #sub { font-weight: 600; letter-spacing: -0.025em; color: #f5f5f7; }
+  #small { font-weight: 500; letter-spacing: -0.01em; color: #9a9ba3; }
+  #url { font-family: 'JetBrains Mono', monospace; font-weight: 500; color: #e9e9ee; border: 1px solid rgb(255 255 255 / 0.18);
+    background: rgb(255 255 255 / 0.05); border-radius: 14px; }
+  #bloom { position: absolute; border-radius: 50%; background: radial-gradient(closest-side, rgb(255 236 210 / 0.55), rgb(255 190 140 / 0.18) 45%, transparent); }
+  #vignette { background: radial-gradient(120% 90% at 50% 45%, transparent 55%, rgb(0 0 0 / 0.55) 100%); }
+  #grain { opacity: 0.06; mix-blend-mode: overlay; background-repeat: repeat; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script type="module" src="stage.js"></script>
+</body>
+</html>
