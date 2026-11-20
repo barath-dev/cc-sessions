@@ -20,11 +20,12 @@ It is an unofficial tool and is not affiliated with Anthropic or OpenAI.
 
 ## See it
 
-[![The Sessions view: a folder tree, sessions from three accounts in one list, and the details of the picked session beside it](docs/demo.png)](docs/demo.mp4)
+[![Claude Code and Codex sessions side by side in one folder, both working, labelled by tool](docs/paddock.png)](docs/paddock.mp4)
 
-The screenshot shows the classic layout. The one-minute film
-([docs/demo.mp4](docs/demo.mp4)) introduces 2.5: the Finder layout, Usage, Settings and
-accounts. Both use made-up demo data.
+The 25-second film ([docs/paddock.mp4](docs/paddock.mp4)) introduces 2.8: Claude Code and
+Codex sessions side by side, search and resume across both, and tokens by model. The
+one-minute film of 2.5 ([docs/demo.mp4](docs/demo.mp4)) shows the Finder layout, Usage,
+Settings and accounts. Both use made-up demo data.
 
 ## Install
 

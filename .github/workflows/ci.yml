@@ -37,7 +37,8 @@ jobs:
           cp target/release/paddock "dist/paddock-$os-$arch"
           (cd dist && (sha256sum * 2>/dev/null || shasum -a 256 *) > checksums.txt)
           python3 -m http.server 8765 --directory dist >/dev/null 2>&1 &
-          sleep 1
+          # Up to 10 s for the server to answer: a busy runner can take longer than a second.
+          for i in $(seq 50); do curl -fsS -o /dev/null http://127.0.0.1:8765/checksums.txt && break; sleep 0.2; done
           export HOME="$RUNNER_TEMP/home" SHELL=/bin/bash
           mkdir -p "$HOME/.claude/projects"
           PADDOCK_INSTALL_BASE=http://127.0.0.1:8765 sh install.sh --yes --command cs-ci --port 47900
@@ -62,7 +63,8 @@ jobs:
           $hash = (Get-FileHash -Algorithm SHA256 "dist\paddock-windows-$arch.exe").Hash.ToLower()
           Set-Content dist\checksums.txt "$hash  paddock-windows-$arch.exe"
           $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--directory', 'dist' -PassThru -WindowStyle Hidden
-          Start-Sleep 2
+          # Up to 10 s for the server to answer, as on macOS and Linux.
+          foreach ($i in 1..50) { try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/checksums.txt | Out-Null; break } catch { Start-Sleep -Milliseconds 200 } }
           $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'localappdata'
           $env:APPDATA = Join-Path $env:RUNNER_TEMP 'appdata'
           $env:PADDOCK_SKIP_PATH = '1'
