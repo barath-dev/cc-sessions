@@ -139,8 +139,11 @@ impl Machine {
                 cmd.env_remove(key);
             }
         }
+        // Without folders that hold a paddock program: on Windows cargo puts the
+        // one it built on PATH, where it looks like the command is already taken.
         let mut path = vec![self.root.join("bin")];
-        path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        let program = format!("paddock{}", std::env::consts::EXE_SUFFIX);
+        path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).filter(|dir| !dir.join(&program).exists()));
         cmd.env("PATH", std::env::join_paths(path).unwrap())
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
@@ -668,17 +671,28 @@ fn usage_by_session_for_a_day() {
         reply("msg_2", "2026-11-11T06:30:00.000Z", 900),
     ];
     fs::write(project.join(format!("{session_id}.jsonl")), transcript.join("\n")).unwrap();
+    // Its sub-agents, one of them a workflow's, each with a reply written over two lines.
+    let agents = project.join(session_id).join("subagents");
+    fs::create_dir_all(agents.join("workflows").join("wf_1")).unwrap();
+    let twice = |id: &str, at: &str, out: u64| [reply(id, at, out), reply(id, at, out)].join("\n");
+    fs::write(agents.join("agent-a1.jsonl"), twice("msg_3", "2026-11-10T07:00:00.000Z", 40)).unwrap();
+    fs::write(agents.join("workflows").join("wf_1").join("agent-a2.jsonl"), twice("msg_4", "2026-11-11T07:00:00.000Z", 5)).unwrap();
     m.seal();
 
     assert!(m.run(&["--no-open"]).status.success());
     let token = m.token();
+    let (_, body) = m.get("/api/history", Some(&token), None);
+    let history: Value = serde_json::from_str(&body).unwrap();
+    let items = history["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "sub-agents are not sessions of their own: {body}");
+    assert_eq!(items[0]["tokens"]["output"], 1045, "the session's tokens include its sub-agents', each reply once");
     // 2026-11-10 00:00 UTC is hour 498408.
     let (status, body) = m.get("/api/usage/sessions?from=498408&to=498432", Some(&token), None);
     assert_eq!(status, 200, "{body}");
     let day: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(day["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(day["sessions"][0]["sessionId"], session_id);
-    assert_eq!(day["sessions"][0]["tokens"]["output"], 100, "only that day's reply: {body}");
+    assert_eq!(day["sessions"][0]["tokens"]["output"], 140, "only that day's replies: {body}");
     let (_, body) = m.get("/api/usage/sessions?from=400000&to=400024", Some(&token), None);
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["sessions"], json!([]));
     assert_eq!(m.get("/api/usage/sessions", Some(&token), None).0, 400, "hours are required");

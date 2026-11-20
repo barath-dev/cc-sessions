@@ -376,7 +376,7 @@ pub fn set_dismissed(account: &str, session_id: &str, on: bool) -> Result<()> {
 }
 
 fn fresh(item: &HistoryItem) -> u64 {
-    item.tokens.input + item.tokens.output + item.tokens.cache_write
+    item.own_tokens.input + item.own_tokens.output + item.own_tokens.cache_write
 }
 
 fn median(mut values: Vec<f64>) -> f64 {

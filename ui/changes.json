@@ -10,6 +10,7 @@
       "Running Codex sessions show as open, working or waiting. Close stops the turn Codex is working on and closes its window; a turn Codex carries on with after its window was closed is listed too, and can be stopped. On Windows, running Codex sessions are not found yet.",
       "The loop check reads Codex's patches and failing commands too.",
       "Accounts show which tool they are for; a Codex account whose name does not say so carries a small Codex mark.",
+      "Fixed: tokens used by sub-agents (and workflows' agents) were left out of Usage. They now count with the session that started them.",
       "Fixed: on macOS, a key pressed while Resume or Log in opened a terminal window could make the command run as a different account. The line is now cleared first."
     ]
   },

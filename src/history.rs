@@ -125,7 +125,11 @@ pub struct HistoryItem {
     #[serde(skip)]
     pub prompt_text: String,
     pub artifacts: Vec<Artifact>,
+    /// With its sub-agents'.
     pub tokens: Tokens,
+    /// Without its sub-agents': what the loop check weighs its own edits against.
+    #[serde(skip)]
+    pub own_tokens: Tokens,
     #[serde(skip)]
     pub hours: Vec<(i64, Tokens)>,
     #[serde(skip)]
@@ -416,6 +420,8 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
             Tool::Claude => (transcripts(Path::new(&acc.dir)), Default::default()),
             Tool::Codex => (codex::transcripts(Path::new(&acc.dir)), codex::thread_names(Path::new(&acc.dir))),
         };
+        let first = items.len();
+        let mut agents = Vec::new();
         for path in paths {
             let Ok(meta) = fs::metadata(&path) else { continue };
             let mtime = meta
@@ -439,6 +445,10 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
             let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let key_entry = (key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry: entry.clone() });
             fresh.insert(key_entry.0, key_entry.1);
+            if let Some(session) = (acc.tool == Tool::Claude).then(|| agent_of(Path::new(&acc.dir), &path)).flatten() {
+                agents.push((session, entry));
+                continue;
+            }
             if entry.hidden {
                 continue;
             }
@@ -464,10 +474,16 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 prompt_text: entry.prompt_text.clone(),
                 artifacts: entry.artifacts.clone(),
                 tokens: entry.tokens,
+                own_tokens: entry.tokens,
                 hours: entry.hours.clone(),
                 models: entry.models.clone(),
                 work: entry.work,
             });
+        }
+        for (session, agent) in &agents {
+            if let Some(item) = items[first..].iter_mut().find(|item| &item.session_id == session) {
+                add_agent(item, agent);
+            }
         }
     }
     if changed || !fresh.keys().eq(cache.keys()) {
@@ -478,16 +494,61 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
     Ok(items)
 }
 
-/// `<account>/projects/<folder>/<session>.jsonl`. Top level only: nested
-/// folders hold sub-agent transcripts, which are not sessions.
+/// `<account>/projects/<folder>/<session>.jsonl`, and the sub-agents' transcripts
+/// under `<folder>/<session>/subagents/` (a workflow's a folder further down).
 fn transcripts(account_dir: &Path) -> Vec<PathBuf> {
     let Ok(projects) = fs::read_dir(account_dir.join("projects")) else { return Vec::new() };
     let mut found = Vec::new();
     for project in projects.flatten() {
         let Ok(files) = fs::read_dir(project.path()) else { continue };
-        found.extend(files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|x| x == "jsonl") && p.is_file()));
+        for file in files.flatten() {
+            let path = file.path();
+            if file.file_type().is_ok_and(|t| t.is_dir()) {
+                jsonl_below(&path.join("subagents"), &mut found);
+            } else if path.extension().is_some_and(|x| x == "jsonl") && path.is_file() {
+                found.push(path);
+            }
+        }
     }
     found
+}
+
+fn jsonl_below(dir: &Path, found: &mut Vec<PathBuf>) {
+    let Ok(files) = fs::read_dir(dir) else { return };
+    for file in files.flatten() {
+        let path = file.path();
+        match file.file_type() {
+            Ok(t) if t.is_dir() => jsonl_below(&path, found),
+            Ok(t) if t.is_file() && path.extension().is_some_and(|x| x == "jsonl") => found.push(path),
+            _ => {}
+        }
+    }
+}
+
+/// The session a sub-agent's transcript belongs to: the folder it is under,
+/// `<folder>/<session>/subagents/...`. None for a session's own transcript.
+fn agent_of(account_dir: &Path, path: &Path) -> Option<String> {
+    let mut parts = path.strip_prefix(account_dir.join("projects")).ok()?.components();
+    let (_folder, session, _below) = (parts.next()?, parts.next()?, parts.next()?);
+    Some(session.as_os_str().to_string_lossy().into_owned())
+}
+
+/// A sub-agent's tokens, counted with the session that started it, as Claude Code
+/// counts them. They are kept out of `own_tokens`: its edits are not the session's.
+fn add_agent(item: &mut HistoryItem, agent: &Entry) {
+    item.tokens.add(&agent.tokens);
+    for (model, tokens) in &agent.models {
+        item.models.entry(model.clone()).or_default().add(tokens);
+    }
+    item.hours.extend(agent.hours.iter().copied());
+    item.hours.sort_by_key(|(hour, _)| *hour);
+    item.hours.dedup_by(|(hour, tokens), (kept, sum)| {
+        let same = hour == kept;
+        if same {
+            sum.add(tokens);
+        }
+        same
+    });
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ const HELP: &str = "\
 Paddock: every Claude Code and Codex session on your machine, in one place.
 See, close and resume them across every account.
 
-  paddock                          start the web app if needed and open it
+  paddock                      start the web app if needed and open it
   paddock stop                 stop the web app (same as Disconnect in the page)
   paddock setup                change the command name, port, shortcuts and updates
   paddock update [--check]     install the latest version now (--check: only look)
