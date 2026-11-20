@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 # The narration voice for the demo recording (docs/record-demo/setup-voice.sh).
 /docs/record-demo/.tts/
+# The Paddock film's stills and fonts (docs/record-demo/paddock-film/film.mjs).
+/docs/record-demo/paddock-film/.shots/
+/docs/record-demo/paddock-film/.fonts/
