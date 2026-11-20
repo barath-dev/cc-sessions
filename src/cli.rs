@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::accounts::{self, Account};
-use crate::claude;
 use crate::closing;
 use crate::history;
 use crate::os;
@@ -18,39 +17,43 @@ use crate::server::{self, HOST, VERSION};
 use crate::sessions::{self, Session};
 use crate::setup;
 use crate::titles;
+use crate::tools::{self, Tool};
 use crate::update;
-use crate::util::{age, err, ms_to_date, path_str, tilde, Error, Result};
+use crate::util::{age, err, ms_to_date, path_str, tilde, Error, Result, NAME, OLD_NAME};
 
 const HELP: &str = "\
-cc-sessions: see, close and resume Claude Code sessions across every account.
+Paddock: every Claude Code and Codex session on your machine, in one place.
+See, close and resume them across every account.
 
-  cc-sessions                      start the web app if needed and open it
-  cc-sessions stop                 stop the web app (same as Disconnect in the page)
-  cc-sessions setup                change the command name, port, shortcuts and updates
-  cc-sessions update [--check]     install the latest version now (--check: only look)
-  cc-sessions report               report a problem: opens a filled-in GitHub issue
+  paddock                      start the web app if needed and open it
+  paddock stop                 stop the web app (same as Disconnect in the page)
+  paddock setup                change the command name, port, shortcuts and updates
+  paddock update [--check]     install the latest version now (--check: only look)
+  paddock report               report a problem: opens a filled-in GitHub issue
 
-  cc-sessions list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
-  cc-sessions history [--folder PATH] [--account NAME] [--by-date] [--json]
-  cc-sessions close <id>... | --folder PATH | --account NAME  [--yes]
-  cc-sessions rename <id> NEW NAME | --reset
+  paddock list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
+  paddock history [--folder PATH] [--account NAME] [--by-date] [--json]
+  paddock close <id>... | --folder PATH | --account NAME  [--yes]
+  paddock rename <id> NEW NAME | --reset
 
-  cc-sessions account list [--removed]
-  cc-sessions account add NAME [--alias A] [--dir PATH] [--no-login]
-  cc-sessions account rename NAME NEW-NAME [--alias A]
-  cc-sessions account login NAME
-  cc-sessions account remove NAME [--yes]
-  cc-sessions account restore NAME [--alias A]
+  paddock account list [--removed]
+  paddock account add NAME [--tool claude|codex] [--alias A] [--dir PATH] [--no-login]
+  paddock account rename NAME NEW-NAME [--alias A]
+  paddock account login NAME
+  paddock account remove NAME [--yes]
+  paddock account restore NAME [--alias A]
 
+An account is one Claude Code or Codex folder (~/.claude, ~/.codex-work, ...).
 Session ids are shown as account:id. Closing stops a session and keeps its
-conversation. A new name is kept by cc-sessions; Claude Code keeps its own
+conversation. A new name is kept by Paddock; the tool keeps its own
 title. Nothing under an account folder is ever deleted or changed.
 
 Options: --no-open (start without opening the browser), --version, --help
+Paddock was called cc-sessions before 2.8; that command still works.
 ";
 
 /// Flags that take a value; every other `--flag` is a switch.
-const VALUE_FLAGS: &[&str] = &["folder", "account", "alias", "dir", "command", "port"];
+const VALUE_FLAGS: &[&str] = &["folder", "account", "alias", "dir", "command", "port", "tool"];
 const SWITCHES: &[&str] = &[
     "json", "open", "closed", "all", "yes", "no-login", "removed", "no-open", "shortcut", "no-shortcut", "no-import",
     "no-aliases", "help", "version", "by-date", "reset", "check", "no-auto-update",
@@ -85,7 +88,7 @@ impl Args {
             } else if SWITCHES.contains(&name) && inline.is_none() {
                 args.switches.push(name.to_string());
             } else {
-                return err(format!("Unknown option --{name}. Try: cc-sessions --help"));
+                return err(format!("Unknown option --{name}. Try: paddock --help"));
             }
         }
         Ok(args)
@@ -100,7 +103,7 @@ impl Args {
     }
 
     fn word(&self, index: usize, what: &str) -> Result<&str> {
-        self.words.get(index).map(String::as_str).ok_or_else(|| Error(format!("Missing {what}. Try: cc-sessions --help")))
+        self.words.get(index).map(String::as_str).ok_or_else(|| Error(format!("Missing {what}. Try: paddock --help")))
     }
 }
 
@@ -116,10 +119,18 @@ pub fn main() -> i32 {
     let quiet = matches!(args.words.first().map(String::as_str), Some("serve" | "update" | "setup" | "report")) || args.has("json");
     if !quiet && !accounts::load_config().auto_update {
         if let Some(tag) = update::known_newer() {
-            eprintln!("\ncc-sessions {} is out. Install it with: {} update", tag.trim_start_matches('v'), me());
+            eprintln!("\nPaddock {} is out. Install it with: {} update", tag.trim_start_matches('v'), me());
         }
     }
     code
+}
+
+/// The name for the version line and errors. A 2.7 updater runs the download it saved
+/// as `cc-sessions-<system>` and takes it only if its version line starts so.
+fn invoked_as() -> &'static str {
+    let called = std::env::args_os().next().map(std::path::PathBuf::from);
+    let called = called.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if called.starts_with(&format!("{OLD_NAME}-")) { OLD_NAME } else { NAME }
 }
 
 /// What the person types to run this tool; setup lets them rename it.
@@ -128,19 +139,20 @@ fn me() -> String {
 }
 
 fn fail(e: &Error) -> i32 {
-    eprintln!("cc-sessions: {e}");
+    eprintln!("{}: {e}", invoked_as());
     1
 }
 
 fn run(args: &Args) -> Result<i32> {
     if args.has("version") {
-        println!("cc-sessions {VERSION}");
+        println!("{} {VERSION}", invoked_as());
         return Ok(0);
     }
     if args.has("help") {
         print!("{HELP}");
         return Ok(0);
     }
+    crate::migrate::run();
     match args.words.first().map(String::as_str) {
         None | Some("ui") => cmd_open(args),
         Some("stop") => cmd_stop(),
@@ -161,7 +173,7 @@ fn run(args: &Args) -> Result<i32> {
             Some("restore") => account_restore(args),
             _ => err("Say what to do with accounts: list, add, rename, login, remove or restore."),
         },
-        Some(other) => err(format!("Unknown command '{other}'. Try: cc-sessions --help")),
+        Some(other) => err(format!("Unknown command '{other}'. Try: paddock --help")),
     }
 }
 
@@ -243,7 +255,9 @@ fn http(method: &str, path: &str, body: Option<&str>, timeout: Duration) -> Opti
 fn ping() -> Option<Value> {
     let (status, body) = http("GET", "/api/ping", None, Duration::from_secs(2))?;
     let data: Value = serde_json::from_str(&body).ok()?;
-    (status == 200 && data.get("app").and_then(Value::as_str) == Some("cc-sessions")).then_some(data)
+    // The server answers to its old name (see server.rs); a later one may answer to the new.
+    let app = data.get("app").and_then(Value::as_str);
+    (status == 200 && (app == Some(NAME) || app == Some(OLD_NAME))).then_some(data)
 }
 
 fn port_busy() -> bool {
@@ -255,14 +269,14 @@ fn port_busy() -> bool {
 fn cmd_open(args: &Args) -> Result<i32> {
     let port = server::port();
     if ping().is_some() {
-        println!("Claude Sessions is already running.");
+        println!("Paddock is already running.");
     } else {
         if port_busy() {
             return err(format!("Port {port} is in use by another program. Stop it, or pick another port with: {} setup", me()));
         }
         server::start_detached(&std::env::current_exe()?)?;
         wait_for_server()?;
-        println!("Claude Sessions started.");
+        println!("Paddock started.");
     }
     let base = format!("http://{HOST}:{port}");
     if !args.has("no-open") {
@@ -289,10 +303,10 @@ fn wait_for_server() -> Result<()> {
 fn cmd_update(args: &Args) -> Result<i32> {
     println!("Looking for a new version...");
     let Some(release) = update::check()? else {
-        println!("cc-sessions {VERSION} is the latest version.");
+        println!("Paddock {VERSION} is the latest version.");
         return Ok(0);
     };
-    println!("cc-sessions {} is out (this is {VERSION}).", release.tag.trim_start_matches('v'));
+    println!("Paddock {} is out (this is {VERSION}).", release.tag.trim_start_matches('v'));
     if !release.url.is_empty() {
         println!("  What's new: {}", release.url);
     }
@@ -308,7 +322,7 @@ fn cmd_update(args: &Args) -> Result<i32> {
         cmd_stop()?;
         server::start_detached(&os::installed_program())?;
         wait_for_server()?;
-        println!("Claude Sessions restarted on the new version.");
+        println!("Paddock restarted on the new version.");
     }
     Ok(0)
 }
@@ -338,7 +352,7 @@ fn cmd_report() -> Result<i32> {
 
 fn cmd_stop() -> Result<i32> {
     let Some(info) = ping() else {
-        println!("Claude Sessions is not running.");
+        println!("Paddock is not running.");
         return Ok(0);
     };
     let pid = info.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -351,7 +365,7 @@ fn cmd_stop() -> Result<i32> {
     if os::pid_alive(pid) {
         return err(format!("The server (pid {pid}) has not stopped yet."));
     }
-    println!("Claude Sessions stopped. Your Claude sessions are untouched.");
+    println!("Paddock stopped. Your Claude Code and Codex sessions are untouched.");
     Ok(0)
 }
 
@@ -385,7 +399,7 @@ fn cmd_list(args: &Args) -> Result<i32> {
         println!("{}", tilde(&folder));
         let rows: Vec<Vec<String>> = group
             .iter()
-            .map(|s| vec![s.key.clone(), s.kind.clone(), s.status.clone(), age(s.updated_at), s.name.clone()])
+            .map(|s| vec![s.key.clone(), s.tool.id().to_string(), s.kind.clone(), s.status.clone(), age(s.updated_at), s.name.clone()])
             .collect();
         table(&rows, "  ");
     }
@@ -440,7 +454,7 @@ fn cmd_rename(args: &Args) -> Result<i32> {
     let token = args.word(1, "the session id")?;
     let title = args.words[2..].join(" ");
     if title.trim().is_empty() != args.has("reset") {
-        return err("Give the new name, or --reset to go back to Claude Code's own title.");
+        return err("Give the new name, or --reset to go back to the tool's own title.");
     }
     let (account, ident) = match token.rsplit_once(':') {
         Some((account, ident)) => (Some(account), ident.to_lowercase()),
@@ -454,7 +468,9 @@ fn cmd_rename(args: &Args) -> Result<i32> {
         .map(|s| (s.account.clone(), s.account_dir.clone(), s.session_id.clone()))
         .collect();
     for item in history::history_items()? {
-        let matches = account.is_none_or(|a| a == item.account) && !ident.is_empty() && item.session_id.to_lowercase().starts_with(&ident);
+        let matches = account.is_none_or(|a| a == item.account)
+            && !ident.is_empty()
+            && (item.id.to_lowercase() == ident || item.session_id.to_lowercase().starts_with(&ident));
         let entry = (item.account, item.account_dir, item.session_id);
         if matches && !found.contains(&entry) {
             found.push(entry);
@@ -465,8 +481,8 @@ fn cmd_rename(args: &Args) -> Result<i32> {
         [(account, dir, session_id)] => {
             let short: String = session_id.chars().take(8).collect();
             match titles::set(dir, session_id, &title)? {
-                Some(title) => println!("Renamed {account}:{short} to \"{title}\". Claude Code keeps its own title."),
-                None => println!("{account}:{short} goes by Claude Code's title again."),
+                Some(title) => println!("Renamed {account}:{short} to \"{title}\". The tool keeps its own title."),
+                None => println!("{account}:{short} goes by the tool's own title again."),
             }
             Ok(0)
         }
@@ -528,11 +544,12 @@ fn cmd_close(args: &Args) -> Result<i32> {
     }
 
     // Never close the session this command was run from.
-    let own_id = std::env::var("CLAUDE_CODE_SESSION_ID").unwrap_or_default();
+    // Codex runs a session's commands in its background service, not under the window: they carry its id.
+    let own_ids: Vec<String> = ["CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].iter().filter_map(|v| std::env::var(v).ok()).filter(|id| !id.is_empty()).collect();
     let parents = ancestors();
     let mut kept = Vec::new();
     for sess in targets {
-        if (!own_id.is_empty() && sess.session_id == own_id) || sess.pid.is_some_and(|pid| parents.contains(&pid)) {
+        if own_ids.contains(&sess.session_id) || sess.pid.is_some_and(|pid| parents.contains(&pid)) {
             println!("Skipped {} ({}): this command is running inside it.", sess.key, sess.name);
         } else if !sess.open {
             println!("Skipped {} ({}): already closed.", sess.key, sess.name);
@@ -545,7 +562,8 @@ fn cmd_close(args: &Args) -> Result<i32> {
         return Ok(failed as i32);
     }
 
-    let (background, interactive): (Vec<&Session>, Vec<&Session>) = kept.into_iter().partition(|s| s.is_background());
+    // A Codex turn whose window was closed has no terminal to ask about.
+    let (background, interactive): (Vec<&Session>, Vec<&Session>) = kept.into_iter().partition(|s| s.is_background() || s.pid.is_none());
     let mut chosen = Vec::new();
     if !background.is_empty() {
         println!("Background sessions to close ({}):", background.len());
@@ -573,9 +591,9 @@ fn cmd_close(args: &Args) -> Result<i32> {
 
 // --------------------------------------------------------------------- accounts
 
-/// Run claude for an account in this terminal, so sign-in prompts work.
-fn claude_here(acc: &Account, args: &[&str]) -> Result<()> {
-    claude::command(acc)?.args(args).status()?;
+/// Run the account's tool in this terminal, so sign-in prompts work.
+fn tool_here(acc: &Account, args: &[String]) -> Result<()> {
+    tools::command(acc)?.args(args).status()?;
     Ok(())
 }
 
@@ -584,7 +602,7 @@ fn alias_note() {
 }
 
 fn shown_alias(acc: &Account) -> String {
-    acc.alias.clone().unwrap_or_else(|| if acc.is_default() { "claude".into() } else { "-".into() })
+    acc.start_command().unwrap_or_else(|| "-".into())
 }
 
 fn account_list(args: &Args) -> Result<i32> {
@@ -600,23 +618,25 @@ fn account_list(args: &Args) -> Result<i32> {
         return Ok(0);
     }
     if removed {
-        let mut rows = vec![vec!["NAME".to_string(), "ALIAS".into(), "FOLDER".into()]];
-        rows.extend(accounts.iter().map(|a| vec![a.name.clone(), a.alias.clone().unwrap_or("-".into()), tilde(&a.dir)]));
+        let mut rows = vec![vec!["NAME".to_string(), "TOOL".into(), "ALIAS".into(), "FOLDER".into()]];
+        rows.extend(accounts.iter().map(|a| vec![a.name.clone(), a.tool.label().into(), a.alias.clone().unwrap_or("-".into()), tilde(&a.dir)]));
         table(&rows, "");
         println!("Their folders and logins are untouched. Bring one back with: {} account restore NAME", me());
         return Ok(0);
     }
-    let infos: Vec<claude::AuthInfo> = thread::scope(|scope| {
-        let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || claude::auth_status(acc))).collect();
+    let infos: Vec<tools::AuthInfo> = thread::scope(|scope| {
+        let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || tools::auth_status(acc))).collect();
         handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
     });
     let (sessions, _) = sessions::all_sessions(&accounts)?;
-    let mut rows = vec![["NAME", "ALIAS", "LOGIN", "ORG", "PLAN", "OPEN", "FOLDER"].map(String::from).to_vec()];
+    let mut rows = vec![["NAME", "TOOL", "ALIAS", "LOGIN", "ORG", "PLAN", "OPEN", "FOLDER"].map(String::from).to_vec()];
     for (acc, info) in accounts.iter().zip(infos) {
+        let login = if info.logged_in { info.email.unwrap_or_else(|| "logged in".into()) } else { "not logged in".into() };
         rows.push(vec![
             acc.name.clone(),
+            acc.tool.label().into(),
             shown_alias(acc),
-            info.email.unwrap_or_else(|| "not logged in".into()),
+            login,
             info.org.unwrap_or_else(|| "-".into()),
             info.plan.unwrap_or_else(|| "-".into()),
             sessions.iter().filter(|s| s.open && s.account == acc.name).count().to_string(),
@@ -627,22 +647,35 @@ fn account_list(args: &Args) -> Result<i32> {
     let extra = accounts::unregistered_folders()?;
     if !extra.is_empty() {
         println!("\nFolders not registered as accounts:");
-        for path in extra {
-            println!("  {0}   (add with: {1} account add NAME --dir {0})", tilde(&path), me());
+        for found in extra {
+            let dir = tilde(&found.dir);
+            println!("  {dir}   (add with: {} account add {} --tool {} --dir {dir})", me(), found.name, found.tool.id());
         }
     }
     Ok(0)
 }
 
-fn account_add(args: &Args) -> Result<i32> {
-    let (acc, created) = accounts::add_account(args.word(2, "the account name")?, args.value("alias"), args.value("dir"))?;
-    let how = if created { "created" } else { "already existed and was adopted as is" };
-    println!("Added account '{}': folder {} {how}, alias {}.", acc.name, tilde(&acc.dir), shown_alias(&acc));
-    if !args.has("no-login") && !claude::auth_status(&acc).logged_in {
-        println!("Signing in...");
-        claude_here(&acc, &["auth", "login"])?;
+fn login_line(info: &tools::AuthInfo) -> String {
+    match (&info.email, info.logged_in) {
+        (Some(email), true) => email.clone(),
+        (None, true) => info.plan.clone().map_or("logged in".into(), |plan| format!("logged in ({plan})")),
+        _ => "not logged in".into(),
     }
-    println!("Login: {}", claude::auth_status(&acc).email.unwrap_or_else(|| "not logged in".into()));
+}
+
+fn account_add(args: &Args) -> Result<i32> {
+    let tool = match args.value("tool") {
+        None => Tool::Claude,
+        Some(id) => Tool::from_id(id).ok_or_else(|| Error(format!("--tool is claude or codex, not '{id}'.")))?,
+    };
+    let (acc, created) = accounts::add_account(args.word(2, "the account name")?, args.value("alias"), args.value("dir"), tool)?;
+    let how = if created { "created" } else { "already existed and was adopted as is" };
+    println!("Added {} account '{}': folder {} {how}, alias {}.", tool.label(), acc.name, tilde(&acc.dir), shown_alias(&acc));
+    if !args.has("no-login") && !tools::auth_status(&acc).logged_in {
+        println!("Signing in...");
+        tool_here(&acc, &tool.login_args())?;
+    }
+    println!("Login: {}", login_line(&tools::auth_status(&acc)));
     alias_note();
     Ok(0)
 }
@@ -656,10 +689,10 @@ fn account_rename(args: &Args) -> Result<i32> {
 
 fn account_login(args: &Args) -> Result<i32> {
     let acc = accounts::get_account(args.word(2, "the account name")?)?;
-    let info = claude::auth_status(&acc);
+    let info = tools::auth_status(&acc);
     if info.logged_in {
         let (sessions, _) = sessions::all_sessions(std::slice::from_ref(&acc))?;
-        println!("'{}' is logged in as {}.", acc.name, info.email.unwrap_or_default());
+        println!("'{}' is {}.", acc.name, info.email.map_or("logged in".into(), |e| format!("logged in as {e}")));
         let live: Vec<&Session> = sessions.iter().filter(|s| s.live).collect();
         if !live.is_empty() {
             println!("These running sessions will lose their login:");
@@ -670,11 +703,11 @@ fn account_login(args: &Args) -> Result<i32> {
         if !confirm("Log out and sign in again? History and settings are kept.") {
             return Ok(1);
         }
-        claude_here(&acc, &["auth", "logout"])?;
+        tool_here(&acc, &acc.tool.logout_args())?;
     }
-    claude_here(&acc, &["auth", "login"])?;
-    let info = claude::auth_status(&acc);
-    println!("Login: {}", info.email.clone().unwrap_or_else(|| "not logged in".into()));
+    tool_here(&acc, &acc.tool.login_args())?;
+    let info = tools::auth_status(&acc);
+    println!("Login: {}", login_line(&info));
     Ok(!info.logged_in as i32)
 }
 
@@ -688,7 +721,7 @@ fn account_remove(args: &Args) -> Result<i32> {
             println!("  {}", describe(sess));
         }
     }
-    if !args.has("yes") && !confirm(&format!("Remove account '{}' from Claude Sessions? Nothing on disk is deleted.", acc.name)) {
+    if !args.has("yes") && !confirm(&format!("Remove account '{}' from Paddock? Nothing on disk is deleted.", acc.name)) {
         return Ok(1);
     }
     accounts::remove_account(&acc.name)?;

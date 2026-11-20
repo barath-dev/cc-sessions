@@ -1,4 +1,4 @@
-//! `cc-sessions setup`: a few questions, each with a default, that can be
+//! `paddock setup`: a few questions, each with a default, that can be
 //! answered again at any time. The installers run this once after download.
 
 use std::fs;
@@ -11,6 +11,7 @@ use crate::accounts::{self, Account, Config};
 use crate::cli::Args;
 use crate::os::{self, ShellHook};
 use crate::store::{self, state_file};
+use crate::tools;
 use crate::util::{err, expand_tilde, home, now_ms, path_str, tilde, Error, Result};
 
 /// Read one answer; Enter (or no terminal at all) keeps the default.
@@ -40,15 +41,17 @@ fn ask_yes(question: &str, default: bool, unattended: bool) -> bool {
     }
 }
 
-/// `alias NAME="CLAUDE_CONFIG_DIR=PATH claude"` lines the person already has,
-/// as (folder, alias), so a first import keeps the names they are used to.
+/// `alias NAME="CLAUDE_CONFIG_DIR=PATH claude"` (or `CODEX_HOME=PATH codex`) lines
+/// the person already has, as (folder, alias), so a first import keeps the names they are used to.
 pub fn known_aliases(rc_text: &str) -> Vec<(PathBuf, String)> {
     let mut found = Vec::new();
     for line in rc_text.lines() {
         let Some(rest) = line.trim().strip_prefix("alias ") else { continue };
         let Some((name, value)) = rest.split_once('=') else { continue };
-        let Some((_, after)) = value.split_once("CLAUDE_CONFIG_DIR=") else { continue };
-        if !value.contains("claude") || !accounts::valid_alias(name.trim()) {
+        let Some((tool, after)) = tools::ALL.into_iter().find_map(|t| value.split_once(&format!("{}=", t.env_var())).map(|(_, a)| (t, a))) else {
+            continue;
+        };
+        if !value.contains(tool.program()) || !accounts::valid_alias(name.trim()) {
             continue;
         }
         let raw: String = after.trim_start_matches(['"', '\'']).chars().take_while(|c| !c.is_whitespace() && !"\"'".contains(*c)).collect();
@@ -62,33 +65,63 @@ pub fn known_aliases(rc_text: &str) -> Vec<(PathBuf, String)> {
 
 /// Add the hook lines to the shell's startup file, once, keeping a backup.
 /// Returns what was done, for the summary.
+const HOOK_COMMENT: &str = "# paddock: Claude Code and Codex account shortcuts";
+
 pub fn apply_hook(hook: &ShellHook) -> Result<String> {
     let shown = tilde(&path_str(&hook.file));
     let before = fs::read_to_string(&hook.file).unwrap_or_default();
     let mut lines: Vec<String> = before.lines().map(String::from).collect();
 
-    // Version 1 loaded a file called aliases.zsh; point that line at the new file.
+    // Version 1 loaded a file called aliases.zsh, and before 2.8 the folder was called
+    // cc-sessions; point such a line at the file of now. Their comment line goes too.
     let mut changed = false;
     for line in &mut lines {
-        if line.contains("cc-sessions/aliases.zsh") {
+        let old = line.contains("cc-sessions/aliases.zsh") || line.contains("cc-sessions/aliases.sh");
+        if old && line.trim() != hook.lines[0] {
             *line = hook.lines[0].clone();
             changed = true;
         }
     }
-    let missing: Vec<&String> = hook.lines.iter().filter(|wanted| !lines.iter().any(|l| l.trim() == wanted.as_str())).collect();
+    // Both old lines now say the same: keep the last, the one under its comment.
+    if let Some(last) = lines.iter().rposition(|line| line.trim() == hook.lines[0]) {
+        let before = lines.len();
+        let mut i = 0;
+        lines.retain(|line| {
+            i += 1;
+            i - 1 == last || line.trim() != hook.lines[0]
+        });
+        changed |= lines.len() != before;
+    }
+    for line in &mut lines {
+        // "# cc-sessions: Claude Code account shortcuts", or "... and Codex ...".
+        if line.trim().starts_with("# cc-sessions:") && line.ends_with("account shortcuts") {
+            *line = HOOK_COMMENT.to_string();
+            changed = true;
+        }
+    }
+    let missing: Vec<String> = hook.lines.iter().filter(|wanted| !lines.iter().any(|l| l.trim() == wanted.as_str())).cloned().collect();
     if !missing.is_empty() {
-        lines.push(String::new());
-        lines.push("# cc-sessions: Claude Code account shortcuts".to_string());
-        lines.extend(missing.into_iter().cloned());
+        // Under the comment already there, or a new one at the end.
+        match lines.iter().position(|line| line == HOOK_COMMENT) {
+            Some(at) => {
+                let end = lines[at..].iter().position(|line| line.trim().is_empty()).map_or(lines.len(), |n| at + n);
+                lines.splice(end..end, missing);
+            }
+            None => {
+                lines.push(String::new());
+                lines.push(HOOK_COMMENT.to_string());
+                lines.extend(missing);
+            }
+        }
         changed = true;
     }
     if !changed {
         return Ok(format!("{shown} already loads the shortcuts."));
     }
     if hook.file.exists() {
-        let mut backup = PathBuf::from(format!("{}.cc-sessions-backup", path_str(&hook.file)));
+        let mut backup = PathBuf::from(format!("{}.paddock-backup", path_str(&hook.file)));
         if backup.exists() {
-            backup = PathBuf::from(format!("{}.cc-sessions-backup-{}", path_str(&hook.file), now_ms()));
+            backup = PathBuf::from(format!("{}.paddock-backup-{}", path_str(&hook.file), now_ms()));
         }
         fs::copy(&hook.file, &backup)?;
     }
@@ -102,8 +135,8 @@ fn rc_text(hook: Option<&ShellHook>) -> String {
 }
 
 fn valid_command(name: &str) -> Result<()> {
-    if !accounts::valid_alias(name) || name == "claude" {
-        return err("The command name must be letters, digits, dashes or underscores, and not 'claude'.");
+    if !accounts::valid_alias(name) || tools::ALL.iter().any(|t| t.program() == name) {
+        return err("The command name must be letters, digits, dashes or underscores, and not 'claude' or 'codex'.");
     }
     Ok(())
 }
@@ -125,7 +158,7 @@ pub fn run(args: &Args) -> Result<()> {
     let old = accounts::load_config();
     let hook = os::shell_hook();
 
-    println!("cc-sessions setup. Press Enter to keep the value in [brackets].\n");
+    println!("Paddock setup. Press Enter to keep the value in [brackets].\n");
 
     // 1. Command name
     let command = match args.value("command") {
@@ -145,40 +178,44 @@ pub fn run(args: &Args) -> Result<()> {
     let shortcut = switch(args, "shortcut", "no-shortcut")
         .unwrap_or_else(|| ask_yes("Add a clickable shortcut (Applications / Start menu)?", old.shortcut, unattended));
 
-    // 4. Register the Claude Code folders found (first run only)
+    // 4. Register the Claude Code and Codex folders found (first run only)
     let mut import: Option<Vec<Account>> = None;
     if accounts::registry_exists() {
         println!("Accounts: {} already registered; left as they are.", accounts::load_accounts(false)?.len());
+        for extra in accounts::unregistered_folders()? {
+            let dir = tilde(&extra.dir);
+            println!("  {} folder {dir} is not registered. Add it with: {command} account add {} --tool {} --dir {dir}", extra.tool.label(), extra.name, extra.tool.id());
+        }
     } else {
         let found = accounts::discover(&known_aliases(&rc_text(hook.as_ref())));
         if found.is_empty() {
-            println!("No Claude Code folders found yet. Add accounts later with: {command} account add NAME");
+            println!("No Claude Code or Codex folders found yet. Add accounts later with: {command} account add NAME");
             import = Some(Vec::new());
         } else {
-            println!("Claude Code folders found:");
+            println!("Folders found:");
             for acc in &found {
-                let alias = acc.alias.clone().unwrap_or_else(|| "claude".into());
-                println!("  {:<12} {:<18} {}", acc.name, alias, tilde(&acc.dir));
+                let alias = acc.start_command().unwrap_or_default();
+                println!("  {:<12} {:<12} {:<18} {}", acc.name, acc.tool.label(), alias, tilde(&acc.dir));
             }
             let yes = if args.has("no-import") { false } else { ask_yes("Register these as accounts?", true, unattended) };
             import = Some(if yes { found } else { Vec::new() });
         }
     }
 
-    // 5. Manage the claude-* shortcuts
+    // 5. Manage the claude-* and codex-* shortcuts
     let manage_default = if config_exists { old.manage_aliases } else { true };
     let manage = if args.has("no-aliases") {
         false
     } else {
         match &hook {
             Some(h) => {
-                println!("To make the claude-* shortcuts work, this line is added to {}:", tilde(&path_str(&h.file)));
+                println!("To make the claude-* and codex-* shortcuts work, this line is added to {}:", tilde(&path_str(&h.file)));
                 for line in &h.lines {
                     println!("    {line}");
                 }
-                ask_yes("Let cc-sessions manage the claude-* shortcuts?", manage_default, unattended)
+                ask_yes("Let Paddock manage the claude-* and codex-* shortcuts?", manage_default, unattended)
             }
-            None => ask_yes("Let cc-sessions manage the claude-* shortcuts?", manage_default, unattended),
+            None => ask_yes("Let Paddock manage the claude-* and codex-* shortcuts?", manage_default, unattended),
         }
     };
 
@@ -186,7 +223,7 @@ pub fn run(args: &Args) -> Result<()> {
     let auto_update = if args.has("no-auto-update") {
         false
     } else {
-        ask_yes("Keep cc-sessions up to date automatically?", old.auto_update, unattended)
+        ask_yes("Keep Paddock up to date automatically?", old.auto_update, unattended)
     };
 
     // Apply.
@@ -200,11 +237,11 @@ pub fn run(args: &Args) -> Result<()> {
     let link = os::install_command(&command, &exe, Some(&old.command))?;
     println!("Command:   {command}  ({})", tilde(&path_str(&link)));
     println!("Port:      {port}");
-    println!("Updates:   {}", if auto_update { "automatic" } else { "by hand (cc-sessions update)" });
+    println!("Updates:   {}", if auto_update { "automatic" } else { "by hand (paddock update)" });
 
     if shortcut {
         println!("Shortcut:  {}", tilde(&path_str(&os::install_shortcut(&exe)?)));
-    } else if old.shortcut {
+    } else if old.shortcut && config_exists {
         println!("Shortcut:  no longer wanted; the existing one was left in place for you to delete.");
     }
 
@@ -218,7 +255,7 @@ pub fn run(args: &Args) -> Result<()> {
     if manage {
         match &hook {
             Some(h) => println!("Shortcuts: {}", apply_hook(h)?),
-            None if os::IS_WINDOWS => println!("Shortcuts: claude-* launchers are in the cc-sessions bin folder on your PATH."),
+            None if os::IS_WINDOWS => println!("Shortcuts: claude-* and codex-* launchers are in the Paddock bin folder on your PATH."),
             None => println!(
                 "Shortcuts: written to {}; load that file from your shell's startup file to use them.",
                 tilde(&path_str(&state_file("aliases.sh")))
@@ -256,21 +293,28 @@ mod tests {
 
     #[test]
     fn hook_is_added_once_and_migrates_the_old_line() {
-        let dir = std::env::temp_dir().join(format!("cc-sessions-hook-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("paddock-hook-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let rc = dir.join("zshrc");
-        fs::write(&rc, "export A=1\n[ -f ~/.config/cc-sessions/aliases.zsh ] && source ~/.config/cc-sessions/aliases.zsh\nexport B=2\n").unwrap();
+        // Version 1's line, and the comment and line written before the rename.
+        fs::write(
+            &rc,
+            "export A=1\n[ -f ~/.config/cc-sessions/aliases.zsh ] && source ~/.config/cc-sessions/aliases.zsh\nexport B=2\n\n\
+             # cc-sessions: Claude Code account shortcuts\n[ -f ~/.config/cc-sessions/aliases.sh ] && . ~/.config/cc-sessions/aliases.sh\n",
+        )
+        .unwrap();
         let hook = ShellHook {
             file: rc.clone(),
-            lines: vec!["[ -f ~/.config/cc-sessions/aliases.sh ] && . ~/.config/cc-sessions/aliases.sh".into(), "export PATH=\"$HOME/.local/bin:$PATH\"".into()],
+            lines: vec!["[ -f ~/.config/paddock/aliases.sh ] && . ~/.config/paddock/aliases.sh".into(), "export PATH=\"$HOME/.local/bin:$PATH\"".into()],
         };
         apply_hook(&hook).unwrap();
         let once = fs::read_to_string(&rc).unwrap();
-        assert!(!once.contains("aliases.zsh"));
-        assert_eq!(once.matches("aliases.sh ] && .").count(), 1);
+        assert!(!once.contains("cc-sessions"), "{once}");
+        assert_eq!(once.matches("paddock/aliases.sh ] && .").count(), 1, "{once}");
+        assert_eq!(once.matches(HOOK_COMMENT).count(), 1, "{once}");
         assert_eq!(once.matches("export PATH=").count(), 1);
         assert!(once.starts_with("export A=1\n") && once.contains("export B=2\n"));
-        assert!(dir.join("zshrc.cc-sessions-backup").exists());
+        assert!(dir.join("zshrc.paddock-backup").exists());
 
         apply_hook(&hook).unwrap();
         assert_eq!(fs::read_to_string(&rc).unwrap(), once, "a second run must change nothing");

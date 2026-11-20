@@ -36,7 +36,7 @@ impl Target {
 
     /// A saved conversation that belongs to a tracked session is opened as
     /// that session (attach for background, refused while open elsewhere);
-    /// any other one is a plain `claude --resume`.
+    /// any other one is a plain `claude --resume` (or `codex resume`).
     pub fn from_history(item: &HistoryItem, sessions: &[Session]) -> Target {
         if let Some(sess) = sessions.iter().find(|s| s.account == item.account && s.session_id == item.session_id) {
             return Target::from_session(sess);
@@ -57,9 +57,9 @@ fn launch(acc: &Account, target: &Target) -> Launch {
     let args = if target.background {
         vec!["attach".to_string(), target.id.clone()]
     } else {
-        vec!["--resume".to_string(), target.session_id.clone()]
+        acc.tool.resume_args(&target.session_id)
     };
-    Launch { cwd: Some(target.cwd.clone()), config_dir: acc.config_dir(), alias: acc.alias.clone(), commands: vec![args] }
+    Launch { tool: acc.tool, cwd: Some(target.cwd.clone()), config_dir: acc.config_dir(), alias: acc.alias.clone(), commands: vec![args] }
 }
 
 /// The command that reopens the session, as the person would type it.
@@ -88,8 +88,8 @@ pub fn open(acc: &Account, target: &Target) -> Result<String> {
 pub fn open_login(acc: &Account, relogin: bool) -> Result<String> {
     let mut commands = Vec::new();
     if relogin {
-        commands.push(vec!["auth".to_string(), "logout".to_string()]);
+        commands.push(acc.tool.logout_args());
     }
-    commands.push(vec!["auth".to_string(), "login".to_string()]);
-    os::open_terminal(&Launch { cwd: None, config_dir: acc.config_dir(), alias: acc.alias.clone(), commands })
+    commands.push(acc.tool.login_args());
+    os::open_terminal(&Launch { tool: acc.tool, cwd: None, config_dir: acc.config_dir(), alias: acc.alias.clone(), commands })
 }

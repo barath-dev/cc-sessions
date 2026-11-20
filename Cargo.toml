@@ -1,13 +1,13 @@
 [package]
-name = "cc-sessions"
-version = "2.7.2"
+name = "paddock"
+version = "2.8.0"
 edition = "2021"
 license = "MIT"
-description = "See, close and resume Claude Code sessions across every account on one machine."
-repository = "https://github.com/barath-dev/cc-sessions"
+description = "Paddock: every Claude Code and Codex session on your machine, in one place. See, close and resume them across every account."
+repository = "https://github.com/barath-dev/paddock"
 
 [[bin]]
-name = "cc-sessions"
+name = "paddock"
 path = "src/main.rs"
 
 # Stand-in for the real `claude` command, used only by the tests.
@@ -22,6 +22,7 @@ serde_json = "1"
 memchr = "2"
 tiny_http = "0.12"
 getrandom = "0.3"
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

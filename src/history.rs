@@ -1,5 +1,5 @@
-//! Every saved conversation, read from the transcripts Claude Code keeps.
-//! Transcripts are only ever opened for reading.
+//! Every saved conversation, read from the transcripts each tool keeps: Claude
+//! Code's here, Codex's rollouts in `codex`. Transcripts are only ever opened for reading.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
@@ -12,10 +12,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::accounts;
+use crate::codex;
 use crate::loops::{Gatherer, Work};
 use crate::pins::Pins;
 use crate::store::{self, state_file};
 use crate::titles::Titles;
+use crate::tools::Tool;
 use crate::util::{iso_to_ms, path_str, squash, Error, Result};
 
 const PREVIEW_CHARS: usize = 300;
@@ -78,6 +80,13 @@ pub struct Entry {
     pub models: BTreeMap<String, Tokens>,
     /// What was done, for spotting sessions going round in circles.
     pub work: Work,
+    /// When the conversation was last worked in, when the transcript says and its
+    /// file's time may not (Codex rewrites old rollouts when it compresses them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_at: Option<i64>,
+    /// Part of another conversation rather than one of its own: a sub-agent's, say.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unreadable: bool,
 }
@@ -95,6 +104,7 @@ struct Cached {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
     pub account: String,
+    pub tool: Tool,
     pub account_dir: String,
     pub id: String,
     pub session_id: String,
@@ -115,7 +125,11 @@ pub struct HistoryItem {
     #[serde(skip)]
     pub prompt_text: String,
     pub artifacts: Vec<Artifact>,
+    /// With its sub-agents'.
     pub tokens: Tokens,
+    /// Without its sub-agents': what the loop check weighs its own edits against.
+    #[serde(skip)]
+    pub own_tokens: Tokens,
     #[serde(skip)]
     pub hours: Vec<(i64, Tokens)>,
     #[serde(skip)]
@@ -233,14 +247,38 @@ fn note_usage(entry: &mut Entry, rec: &Value) {
     if used == Tokens::default() {
         return;
     }
-    entry.tokens.add(&used);
-    entry.models.entry(model.to_string()).or_default().add(&used);
-    if let Some(at) = rec.get("timestamp").and_then(Value::as_str).and_then(iso_to_ms) {
+    let at = rec.get("timestamp").and_then(Value::as_str).and_then(iso_to_ms);
+    note_tokens(entry, model, &used, at);
+}
+
+/// Add one reply's tokens: to the whole, to its model and to the hour it was used in.
+pub fn note_tokens(entry: &mut Entry, model: &str, used: &Tokens, at: Option<i64>) {
+    entry.tokens.add(used);
+    entry.models.entry(model.to_string()).or_default().add(used);
+    if let Some(at) = at {
         let hour = at.div_euclid(3_600_000);
         match entry.hours.last_mut() {
-            Some((last, tokens)) if *last == hour => tokens.add(&used),
-            _ => entry.hours.push((hour, used)),
+            Some((last, tokens)) if *last == hour => tokens.add(used),
+            _ => entry.hours.push((hour, *used)),
         }
+    }
+}
+
+/// Note one prompt the person typed. `typed` keeps what is searched: how a long
+/// conversation began and where it got to.
+pub fn note_prompt(entry: &mut Entry, typed: &mut Vec<String>, prompt: &str) {
+    let prompt = truncate(prompt, PREVIEW_CHARS);
+    entry.prompts += 1;
+    if entry.first_prompt.is_none() {
+        entry.first_prompt = Some(prompt.clone());
+    }
+    typed.push(prompt.clone());
+    if typed.len() > 2 * SEARCH_PROMPTS {
+        typed.remove(SEARCH_PROMPTS);
+    }
+    entry.last_prompts.push(prompt);
+    if entry.last_prompts.len() > 3 {
+        entry.last_prompts.remove(0);
     }
 }
 
@@ -347,20 +385,7 @@ fn index_transcript(path: &Path) -> Entry {
             }
             if let Some(prompt) = prompt_text(&rec) {
                 work.prompt(&prompt);
-                let prompt = truncate(&prompt, PREVIEW_CHARS);
-                entry.prompts += 1;
-                if entry.first_prompt.is_none() {
-                    entry.first_prompt = Some(prompt.clone());
-                }
-                typed.push(prompt.clone());
-                // A long conversation is searched by how it began and where it got to.
-                if typed.len() > 2 * SEARCH_PROMPTS {
-                    typed.remove(SEARCH_PROMPTS);
-                }
-                entry.last_prompts.push(prompt);
-                if entry.last_prompts.len() > 3 {
-                    entry.last_prompts.remove(0);
-                }
+                note_prompt(&mut entry, &mut typed, &prompt);
             }
         }
     }
@@ -391,7 +416,13 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
     let mut changed = false;
 
     for acc in &accounts {
-        for path in transcripts(Path::new(&acc.dir)) {
+        let (paths, names) = match acc.tool {
+            Tool::Claude => (transcripts(Path::new(&acc.dir)), Default::default()),
+            Tool::Codex => (codex::transcripts(Path::new(&acc.dir)), codex::thread_names(Path::new(&acc.dir))),
+        };
+        let first = items.len();
+        let mut agents = Vec::new();
+        for path in paths {
             let Ok(meta) = fs::metadata(&path) else { continue };
             let mtime = meta
                 .modified()
@@ -404,35 +435,55 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
                 Some(hit) if hit.v == CACHE_VERSION && hit.size == meta.len() && hit.mtime == mtime => hit.entry.clone(),
                 _ => {
                     changed = true;
-                    index_transcript(&path)
+                    match acc.tool {
+                        Tool::Claude => index_transcript(&path),
+                        Tool::Codex => codex::index_rollout(&path),
+                    }
                 }
             };
             let folder = path.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let key_entry = (key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry: entry.clone() });
+            fresh.insert(key_entry.0, key_entry.1);
+            if let Some(session) = (acc.tool == Tool::Claude).then(|| agent_of(Path::new(&acc.dir), &path)).flatten() {
+                agents.push((session, entry));
+                continue;
+            }
+            if entry.hidden {
+                continue;
+            }
             let given = titles.get(&acc.dir, &entry.session_id);
+            // The name Codex has for it, which it keeps apart from the conversation.
+            let own = names.get(&entry.session_id).cloned().or(entry.title.clone());
             items.push(HistoryItem {
                 account: acc.name.clone(),
+                tool: acc.tool,
                 account_dir: acc.dir.clone(),
-                id: entry.session_id.chars().take(8).collect(),
+                id: acc.tool.short_id(&entry.session_id),
                 session_id: entry.session_id.clone(),
-                title: given.map(String::from).or(entry.title.clone()).unwrap_or_else(|| format!("(no title) {file_name}")),
+                title: given.map(String::from).or(own).unwrap_or_else(|| format!("(no title) {file_name}")),
                 renamed: given.is_some(),
                 pinned: pins.has_session(&acc.dir, &entry.session_id),
                 cwd: entry.cwd.clone().unwrap_or_default(),
                 folder_label: entry.cwd.clone().unwrap_or(folder),
                 started_at: entry.started_at,
-                last_activity: (mtime / 1_000_000) as i64,
+                last_activity: entry.last_at.unwrap_or((mtime / 1_000_000) as i64),
                 prompts: entry.prompts,
                 first_prompt: entry.first_prompt.clone(),
                 last_prompts: entry.last_prompts.clone(),
                 prompt_text: entry.prompt_text.clone(),
                 artifacts: entry.artifacts.clone(),
                 tokens: entry.tokens,
+                own_tokens: entry.tokens,
                 hours: entry.hours.clone(),
                 models: entry.models.clone(),
-                work: entry.work.clone(),
+                work: entry.work,
             });
-            fresh.insert(key, Cached { v: CACHE_VERSION, size: meta.len(), mtime, entry });
+        }
+        for (session, agent) in &agents {
+            if let Some(item) = items[first..].iter_mut().find(|item| &item.session_id == session) {
+                add_agent(item, agent);
+            }
         }
     }
     if changed || !fresh.keys().eq(cache.keys()) {
@@ -443,16 +494,61 @@ pub fn history_items() -> Result<Vec<HistoryItem>> {
     Ok(items)
 }
 
-/// `<account>/projects/<folder>/<session>.jsonl`. Top level only: nested
-/// folders hold sub-agent transcripts, which are not sessions.
+/// `<account>/projects/<folder>/<session>.jsonl`, and the sub-agents' transcripts
+/// under `<folder>/<session>/subagents/` (a workflow's a folder further down).
 fn transcripts(account_dir: &Path) -> Vec<PathBuf> {
     let Ok(projects) = fs::read_dir(account_dir.join("projects")) else { return Vec::new() };
     let mut found = Vec::new();
     for project in projects.flatten() {
         let Ok(files) = fs::read_dir(project.path()) else { continue };
-        found.extend(files.flatten().map(|f| f.path()).filter(|p| p.extension().is_some_and(|x| x == "jsonl") && p.is_file()));
+        for file in files.flatten() {
+            let path = file.path();
+            if file.file_type().is_ok_and(|t| t.is_dir()) {
+                jsonl_below(&path.join("subagents"), &mut found);
+            } else if path.extension().is_some_and(|x| x == "jsonl") && path.is_file() {
+                found.push(path);
+            }
+        }
     }
     found
+}
+
+fn jsonl_below(dir: &Path, found: &mut Vec<PathBuf>) {
+    let Ok(files) = fs::read_dir(dir) else { return };
+    for file in files.flatten() {
+        let path = file.path();
+        match file.file_type() {
+            Ok(t) if t.is_dir() => jsonl_below(&path, found),
+            Ok(t) if t.is_file() && path.extension().is_some_and(|x| x == "jsonl") => found.push(path),
+            _ => {}
+        }
+    }
+}
+
+/// The session a sub-agent's transcript belongs to: the folder it is under,
+/// `<folder>/<session>/subagents/...`. None for a session's own transcript.
+fn agent_of(account_dir: &Path, path: &Path) -> Option<String> {
+    let mut parts = path.strip_prefix(account_dir.join("projects")).ok()?.components();
+    let (_folder, session, _below) = (parts.next()?, parts.next()?, parts.next()?);
+    Some(session.as_os_str().to_string_lossy().into_owned())
+}
+
+/// A sub-agent's tokens, counted with the session that started it, as Claude Code
+/// counts them. They are kept out of `own_tokens`: its edits are not the session's.
+fn add_agent(item: &mut HistoryItem, agent: &Entry) {
+    item.tokens.add(&agent.tokens);
+    for (model, tokens) in &agent.models {
+        item.models.entry(model.clone()).or_default().add(tokens);
+    }
+    item.hours.extend(agent.hours.iter().copied());
+    item.hours.sort_by_key(|(hour, _)| *hour);
+    item.hours.dedup_by(|(hour, tokens), (kept, sum)| {
+        let same = hour == kept;
+        if same {
+            sum.add(tokens);
+        }
+        same
+    });
 }
 
 #[cfg(test)]
@@ -483,7 +579,7 @@ mod tests {
 
     #[test]
     fn indexes_a_transcript() {
-        let dir = std::env::temp_dir().join(format!("cc-sessions-history-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("paddock-history-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("0f0f0f0f-aaaa-bbbb-cccc-121212121212.jsonl");
         let lines = [

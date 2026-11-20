@@ -28,6 +28,20 @@
   const SECTIONS = [['appearance', 'Appearance', 'palette'], ['accounts', 'Accounts', 'users'], ['general', 'General', 'sliders-horizontal']];
   const icon = (name) => window.ccIcon(name);
 
+  // The tools whose accounts and sessions this app looks after, by the server's id for them.
+  const TOOLS = {
+    claude: { label: 'Claude Code', program: 'claude', alias: (name) => `claude-${name}`, folder: (name) => `~/.claude-${name}` },
+    codex: {
+      label: 'Codex', program: 'codex',
+      // Codex accounts found on disk are already called codex or codex-something.
+      alias: (name) => (name === 'codex' || name.startsWith('codex-') ? name : `codex-${name}`),
+      folder: (name) => `~/.codex-${name.replace(/^codex-/, '')}`,
+    },
+  };
+  const toolOf = (id) => TOOLS[id] || TOOLS.claude;
+  // For both pages: what a tool is called.
+  window.ccTools = { label: (id) => toolOf(id).label };
+
   // ---------------------------------------------------------------- helpers
 
   function h(tag, props = {}, ...children) {
@@ -254,8 +268,8 @@
       h('div', { class: 'st-accounts' }, active.map(accountRow)),
       data.unregistered.length > 0 && h('section', { class: 'st-group' },
         h('h4', {}, 'Folders not registered as accounts'),
-        data.unregistered.map((folder) => h('div', { class: 'st-line' }, h('code', {}, folder),
-          h('button', { type: 'button', class: 'st-btn', onclick: () => addAccount(folder) }, icon('user-plus'), 'Add as account')))),
+        data.unregistered.map((found) => h('div', { class: 'st-line' }, h('code', {}, found.dir), h('span', { class: 'st-hint' }, toolOf(found.tool).label),
+          h('button', { type: 'button', class: 'st-btn', onclick: () => addAccount(found) }, icon('user-plus'), 'Add as account')))),
       removed.length > 0 && h('section', { class: 'st-group' },
         h('h4', {}, 'Removed accounts'),
         h('p', { class: 'st-hint' }, 'Their folders, logins and history are still on disk. Only you can delete them.'),
@@ -266,7 +280,8 @@
   }
 
   function accountRow(a) {
-    const start = a.alias || (a.isDefault ? 'claude' : null);
+    const start = a.start;
+    const tool = toolOf(a.tool);
     return h('article', { class: 'st-account', style: { '--acct': accountColor(a.name) } },
       h('header', { class: 'st-account-head' },
         h('span', { class: 'st-dot' }),
@@ -276,11 +291,14 @@
         !a.loggedIn && h('button', { type: 'button', class: 'st-btn st-btn-primary', 'data-fk': `login:${a.name}`, onclick: () => login(a, false) }, icon('log-in'), 'Log in'),
         h('button', { type: 'button', class: 'st-btn', 'data-fk': `edit:${a.name}`, 'aria-label': `Edit ${a.name}`, onclick: () => editAccount(a) }, icon('pencil'), 'Edit…')),
       h('dl', { class: 'st-facts' },
-        h('dt', {}, 'Login'), h('dd', {}, a.loggedIn ? a.email : h('span', { class: 'st-warn' }, 'Not logged in')),
-        a.loggedIn && [h('dt', {}, 'Plan'), h('dd', {}, [a.plan || 'Unknown', a.org ? ` · ${a.org}` : ''])],
+        h('dt', {}, 'Tool'), h('dd', {}, tool.label),
+        h('dt', {}, 'Login'), h('dd', {}, a.loggedIn ? a.email || `Logged in${a.plan ? ` (${a.plan})` : ''}` : h('span', { class: 'st-warn' }, 'Not logged in')),
+        a.loggedIn && a.email && [h('dt', {}, 'Plan'), h('dd', {}, [a.plan || 'Unknown', a.org ? ` · ${a.org}` : ''])],
         h('dt', {}, 'Start with'), h('dd', {}, start ? h('code', {}, start) : 'No alias'),
         h('dt', {}, 'Folder'), h('dd', {}, h('code', {}, a.dir)),
-        h('dt', { title: 'Claude Code deletes older conversations by itself (its cleanupPeriodDays setting)' }, 'History kept'), h('dd', {}, `${a.retentionDays} days`)));
+        a.retentionDays == null
+          ? [h('dt', { title: `${tool.label} keeps conversations until they are deleted` }, 'History kept'), h('dd', {}, 'Until deleted')]
+          : [h('dt', { title: `${tool.label} deletes older conversations by itself (its cleanupPeriodDays setting)` }, 'History kept'), h('dd', {}, `${a.retentionDays} days`)]));
   }
 
   // A dialog over the settings window. `aside` are other ways out: { label, value, danger }.
@@ -354,7 +372,7 @@
     };
     paint();
     return h('div', { class: 'st-field' }, h('span', { class: 'st-field-label' }, 'Colour'), group,
-      h('span', { class: 'st-hint' }, 'Marks this account everywhere in Claude Sessions.'));
+      h('span', { class: 'st-hint' }, 'Marks this account everywhere in Paddock.'));
   }
 
   async function after(message) {
@@ -363,25 +381,38 @@
     changed('accounts');
   }
 
-  async function addAccount(folder = '') {
-    const suggested = folder ? folder.replace(/^.*\/\.claude-/, '').toLowerCase().replace(/[^a-z0-9-]/g, '-') : '';
-    const [name, nameInput] = field('Name', suggested, 'Lowercase letters, digits and dashes. Shown everywhere in this app.');
-    const [alias, aliasInput] = field('Alias', suggested ? `claude-${suggested}` : '', 'The command you type to start Claude Code as this account.');
-    const [dir, dirInput] = field('Folder', folder, 'Where this account keeps its login and history. An existing folder is used as it is.');
-    // Alias and folder follow the name until they are edited.
-    let aliasEdited = false;
-    let dirEdited = Boolean(folder);
+  // `found` is a folder on disk not registered yet: { dir, tool, name }.
+  async function addAccount(found = null) {
+    const toolInput = h('select', {}, Object.entries(TOOLS).map(([id, t]) => h('option', { value: id, selected: id === ((found && found.tool) || 'claude') }, t.label)));
+    const toolField = h('label', { class: 'st-field' }, h('span', { class: 'st-field-label' }, 'Tool'), toolInput,
+      h('span', { class: 'st-hint' }, 'Which program this account is a folder of.'));
+    const tool = () => toolOf(toolInput.value);
+    // The tool's own folder (~/.codex) is started by the plain command, so it needs no alias.
+    const own = Boolean(found && /^~[\\/]\.(claude|codex)$/.test(found.dir));
+    const [name, nameInput] = field('Name', found ? found.name : '', 'Lowercase letters, digits and dashes. Shown everywhere in this app.');
+    const [alias, aliasInput] = field('Alias', found && !own ? tool().alias(found.name) : '', '');
+    const aliasHint = alias.querySelector('.st-hint') || alias.appendChild(h('span', { class: 'st-hint' }));
+    const [dir, dirInput] = field('Folder', found ? found.dir : '', 'Where this account keeps its login and history. An existing folder is used as it is.');
+    // Alias and folder follow the name and the tool until they are edited.
+    let aliasEdited = own;
+    let dirEdited = Boolean(found);
+    const follow = () => {
+      const value = nameInput.value;
+      aliasHint.textContent = `The command you type to start ${tool().label} as this account.`;
+      if (!aliasEdited) aliasInput.value = value ? tool().alias(value) : '';
+      if (!dirEdited) dirInput.value = value ? tool().folder(value) : '';
+    };
     aliasInput.addEventListener('input', () => { aliasEdited = true; });
     dirInput.addEventListener('input', () => { dirEdited = true; });
-    nameInput.addEventListener('input', () => {
-      if (!aliasEdited) aliasInput.value = nameInput.value ? `claude-${nameInput.value}` : '';
-      if (!dirEdited) dirInput.value = nameInput.value ? `~/.claude-${nameInput.value}` : '';
-    });
+    nameInput.addEventListener('input', follow);
+    toolInput.addEventListener('change', follow);
+    toolInput.disabled = Boolean(found);
+    follow();
     const added = await ask({
       title: 'Add account',
-      body: [name, alias, dir],
+      body: [toolField, name, alias, dir],
       confirmLabel: 'Add account',
-      onConfirm: () => api('/api/accounts/add', { name: nameInput.value.trim(), alias: aliasInput.value.trim(), folder: dirInput.value.trim() }),
+      onConfirm: () => api('/api/accounts/add', { tool: toolInput.value, name: nameInput.value.trim(), alias: aliasInput.value.trim(), folder: dirInput.value.trim() }),
     });
     if (!added) return;
     aliasNotice = true;
@@ -391,13 +422,14 @@
   // Name, alias and colour together. Changing the login and removing are their own steps, with their own warnings.
   async function editAccount(a) {
     const [name, nameInput] = field('Name', a.name, 'Lowercase letters, digits and dashes.');
+    const tool = toolOf(a.tool);
     const [alias, aliasInput] = field('Alias', a.alias || '', a.isDefault
-      ? 'Optional. Plain claude already starts this account.'
-      : 'The command you type to start Claude Code as this account.');
-    // An alias that follows the claude-NAME pattern keeps following the name.
-    let aliasFollows = a.alias === `claude-${a.name}`;
+      ? `Optional. Plain ${tool.program} already starts this account.`
+      : `The command you type to start ${tool.label} as this account.`);
+    // An alias that follows the claude-NAME (codex-NAME) pattern keeps following the name.
+    let aliasFollows = a.alias === tool.alias(a.name);
     aliasInput.addEventListener('input', () => { aliasFollows = false; });
-    nameInput.addEventListener('input', () => { if (aliasFollows) aliasInput.value = `claude-${nameInput.value}`; });
+    nameInput.addEventListener('input', () => { if (aliasFollows) aliasInput.value = tool.alias(nameInput.value); });
     let color = a.color || '';
     const result = await ask({
       title: `Edit ${a.name}`,
@@ -511,7 +543,7 @@
 
   // ------------------------------------------------------ updates and reports
 
-  const REPO_URL = 'https://github.com/barath-dev/cc-sessions';
+  const REPO_URL = 'https://github.com/barath-dev/paddock';
   let version = null;         // the server's, from /api/state
   let update = null;          // its update status, from /api/state
   const errors = [];          // the last few error messages shown, for a report
@@ -625,7 +657,7 @@
     const recent = error ? [scrub(error), ...errors.filter((e) => e !== scrub(error))] : [...errors];
     const include = h('input', { type: 'checkbox', checked: recent.length > 0 });
     const text = () => [
-      `cc-sessions: ${diag.version}`,
+      `Paddock: ${diag.version}`,
       `Latest release: ${diag.latest || 'unknown'}`,
       `System: ${diag.system || 'unknown'}`,
       `Claude Code: ${diag.claudeCode || 'unknown'}`,
@@ -677,7 +709,7 @@
   async function setAuto(on) {
     try {
       update = await api('/api/settings/auto-update', { on });
-      toast(on ? 'New versions will be installed automatically.' : 'Updates are now up to you: Settings › General, or cc-sessions update.');
+      toast(on ? 'New versions will be installed automatically.' : 'Updates are now up to you: Settings › General, or paddock update.');
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -748,22 +780,22 @@
       feedbackGroup(),
       h('section', { class: 'st-group' },
         h('h4', {}, 'Disconnect'),
-        h('p', { class: 'st-hint' }, 'Stops Claude Sessions, the server behind this page. Your Claude sessions keep running, and nothing is closed or deleted.'),
+        h('p', { class: 'st-hint' }, 'Stops Paddock, the server behind this page. Your Claude Code and Codex sessions keep running, and nothing is closed or deleted.'),
         h('button', { type: 'button', class: 'st-btn st-btn-danger', 'data-fk': 'stop', onclick: stop }, icon('power'), 'Disconnect…')),
     ];
   }
 
   async function stop() {
     const ok = await ask({
-      title: 'Disconnect Claude Sessions?',
-      body: [h('p', {}, 'This stops the Claude Sessions server and this page stops updating. Your Claude sessions keep running.')],
+      title: 'Disconnect Paddock?',
+      body: [h('p', {}, 'This stops the Paddock server and this page stops updating. Your Claude Code and Codex sessions keep running.')],
       confirmLabel: 'Disconnect',
       danger: true,
       onConfirm: () => api('/api/shutdown', {}),
     });
     if (!ok) return;
     close();
-    const command = store('cc-command') || 'cc-sessions';
+    const command = store('cc-command') || 'paddock';
     toast(`Stopped. Run ${command} in a terminal to start it again.`);
     window.dispatchEvent(new CustomEvent('cc-stopped'));
   }

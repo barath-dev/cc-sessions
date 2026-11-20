@@ -137,6 +137,7 @@ button, input, select { font: inherit; color: inherit; }
 .sb-item[aria-current="true"] { background: var(--side-sel); font-weight: 600; }
 .sb-item .glyph { color: var(--accent); }
 .sb-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-tool { margin-left: 0.4rem; font-size: 0.8em; opacity: 0.6; }
 .sb-count { color: var(--faint); font-size: 12px; }
 .sb-count.is-hot { color: var(--blocked); font-weight: 600; }
 .sb-tag { flex: none; width: 0.7rem; height: 0.7rem; margin: 0 0.15rem; border-radius: 50%; background: var(--acct); }

@@ -6,30 +6,33 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::accounts;
-use crate::claude;
 use crate::os;
 use crate::proc;
 use crate::server::VERSION;
+use crate::tools::{self, Tool};
 use crate::update;
 
-const NEW_ISSUE: &str = "https://github.com/barath-dev/cc-sessions/issues/new";
+const NEW_ISSUE: &str = "https://github.com/barath-dev/paddock/issues/new";
 /// Browsers and GitHub cope with addresses well past this; it keeps a report readable.
 const MAX_URL: usize = 6000;
 
 /// Version, system and setup, for a report and for the page's report preview.
 pub fn diagnostics() -> Value {
-    let claude_version = claude::claude_bin()
-        .ok()
-        .and_then(|bin| proc::run(std::process::Command::new(bin).arg("--version"), Duration::from_secs(10)).ok())
-        .map(|out| out.stdout.trim().to_string())
-        .filter(|v| !v.is_empty());
+    let version = |tool: Tool| {
+        tools::bin(tool)
+            .ok()
+            .and_then(|bin| proc::run(std::process::Command::new(bin).arg("--version"), Duration::from_secs(10)).ok())
+            .map(|out| out.stdout.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
     let accounts = accounts::load_accounts(false).map(|a| a.len()).unwrap_or(0);
     let config = accounts::load_config();
     json!({
         "version": VERSION,
         "latest": update::status().get("latest"),
         "system": format!("{} ({})", os::os_release(), std::env::consts::ARCH),
-        "claudeCode": claude_version,
+        "claudeCode": version(Tool::Claude),
+        "codex": version(Tool::Codex),
         "accounts": accounts,
         "autoUpdate": config.auto_update,
         "installedCopy": update::managed(),
@@ -45,11 +48,12 @@ pub fn summary(diag: &Value) -> String {
     };
     let on = |key: &str| if diag.get(key).and_then(Value::as_bool).unwrap_or(false) { "on" } else { "off" };
     format!(
-        "cc-sessions: {}\nLatest release: {}\nSystem: {}\nClaude Code: {}\nAccounts: {}\nAuto-update: {}",
+        "Paddock: {}\nLatest release: {}\nSystem: {}\nClaude Code: {}\nCodex: {}\nAccounts: {}\nAuto-update: {}",
         text("version"),
         text("latest"),
         text("system"),
         text("claudeCode"),
+        text("codex"),
         text("accounts"),
         on("autoUpdate")
     )
@@ -101,7 +105,7 @@ mod tests {
     #[test]
     fn issue_address_is_filled_and_kept_short() {
         let url = issue_url(&[("version", "2.6.0"), ("diagnostics", "line one\nline two")]);
-        assert!(url.starts_with("https://github.com/barath-dev/cc-sessions/issues/new?template=bug_report.yml&version=2.6.0&diagnostics=line%20one%0Aline%20two"), "{url}");
+        assert!(url.starts_with("https://github.com/barath-dev/paddock/issues/new?template=bug_report.yml&version=2.6.0&diagnostics=line%20one%0Aline%20two"), "{url}");
         let long = "é".repeat(5000);
         let url = issue_url(&[("diagnostics", &long)]);
         assert!(url.len() <= MAX_URL, "{}", url.len());
@@ -111,6 +115,6 @@ mod tests {
     #[test]
     fn summary_reads_plainly() {
         let text = summary(&json!({ "version": "2.6.0", "latest": null, "system": "macOS 26.1 (aarch64)", "claudeCode": "2.1.0", "accounts": 3, "autoUpdate": true }));
-        assert!(text.contains("cc-sessions: 2.6.0") && text.contains("Latest release: unknown") && text.contains("Accounts: 3") && text.contains("Auto-update: on"), "{text}");
+        assert!(text.contains("Paddock: 2.6.0") && text.contains("Latest release: unknown") && text.contains("Accounts: 3") && text.contains("Auto-update: on"), "{text}");
     }
 }

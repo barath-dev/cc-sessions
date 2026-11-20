@@ -109,7 +109,7 @@ async function api(path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401) throw new Error('Open Claude Sessions from the terminal once, so this page has its key.');
+  if (response.status === 401) throw new Error('Open Paddock from the terminal once, so this page has its key.');
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
   return data;
 }
@@ -217,6 +217,13 @@ function accountColor(name) {
   const accounts = S.data ? S.data.accounts : [];
   const index = accounts.findIndex((a) => a.name === name);
   return (index >= 0 && accounts[index].color) || COLORS[(index < 0 ? 0 : index) % COLORS.length];
+}
+
+// What the tool an account belongs to is called: Claude Code, or Codex.
+function toolName(account) {
+  const found = S.data && S.data.accounts.find((a) => a.name === account);
+  const tool = (found && found.tool) || 'claude';
+  return window.ccTools ? window.ccTools.label(tool) : tool;
 }
 
 // Folders as a tree, with a chain of folders that each hold only the next one
@@ -389,7 +396,7 @@ function render() {
   tree = buildTree(entries);
   if (S.place.kind === 'folder' && !tree.byId.has(S.place.id) && S.history) S.place = { kind: 'folder', id: '' };
   const waiting = S.data.sessions.filter((s) => s.open && (s.status === 'blocked' || (s.status === 'done' && Date.now() - (s.updatedAt || 0) < DAY))).length;
-  document.title = `${waiting ? `(${waiting}) ` : ''}${placeName()} — Claude Sessions`;
+  document.title = `${waiting ? `(${waiting}) ` : ''}${placeName()} — Paddock`;
   if (S.renaming) return;
   renderSidebar();
   renderToolbar();
@@ -423,7 +430,9 @@ function renderSidebar() {
     sbItem({ place: { kind: 'folder', id: '' }, icon: 'all', label: 'All folders' }),
     pinned.map((id) => sbItem({ place: { kind: 'folder', id }, icon: 'folder', label: id.slice(id.lastIndexOf('/') + 1) })),
     h('div', { class: 'sb-head' }, 'Accounts'),
-    S.data.accounts.filter((a) => !a.removed).map((a) => sbItem({ place: { kind: 'tag', account: a.name }, label: a.name,
+    S.data.accounts.filter((a) => !a.removed).map((a) => sbItem({ place: { kind: 'tag', account: a.name },
+      // Its tool too, when that is not Claude Code and the name does not already say so.
+      label: a.tool && a.tool !== 'claude' && !a.name.includes(a.tool) ? [a.name, h('span', { class: 'sb-tool' }, toolName(a.name))] : a.name,
       color: accountColor(a.name), count: entries.filter((e) => e.account === a.name).length })),
     h('div', { class: 'sb-foot' }, h('button', { type: 'button', class: 'sb-item', onclick: () => window.ccSettings.open() }, glyph('settings'), h('span', { class: 'sb-name' }, 'Settings'))),
   ].flat().filter(Boolean));
@@ -489,7 +498,7 @@ function folderSub(node) {
 function nameNode(item, where) {
   if (item.kind === 'session' && S.renaming === item.key) return renameBox(item);
   return h('span', { class: where === 'cell' ? 'cell-name' : 'label' }, item.name,
-    item.kind === 'session' && h('span', { class: 'tagdot', style: { '--acct': accountColor(item.account) }, title: item.account }),
+    item.kind === 'session' && h('span', { class: 'tagdot', style: { '--acct': accountColor(item.account) }, title: `${item.account} · ${toolName(item.account)}` }),
     item.kind === 'session' && worthALook(item) && loopBadge(item));
 }
 
@@ -655,7 +664,7 @@ function renderPath() {
 
 function renderStatus() {
   if (S.place.kind === 'usage') {
-    $('#statusbar').replaceChildren(h('span', {}, 'Counted from the conversations Claude Code keeps on this Mac'));
+    $('#statusbar').replaceChildren(h('span', {}, 'Counted from the conversations Claude Code and Codex keep on this computer'));
     return;
   }
   const items = itemsIn();
@@ -688,6 +697,7 @@ function sessionFacts(e) {
     h('dl', { class: 'facts' }, [
       ['Folder', e.cwd],
       ['Account', account.email ? `${e.account} (${account.email})` : e.account],
+      ['Tool', toolName(e.account)],
       ['Started', fullDate((s && s.startedAt) || (item && item.startedAt))],
       ['Last status', s && s.detail],
       ['Per prompt', perPromptOf(e) ? `${perPromptText(perPromptOf(e))} tokens (${metricLabel().toLowerCase()})` : null],
@@ -855,8 +865,8 @@ function usageView() {
     h('div', { class: 'usage-row' }, hourMap(week), breakdown('By account', [...perAccount.entries()], (name) => accountColor(name))),
     h('div', { class: 'usage-row' }, breakdown('By model', [...perModel.entries()]), topSessions(chosen)),
     h('p', { class: 'usage-note' },
-      'Counted from each reply in the conversations Claude Code keeps on this Mac. Work done by sub-agents is in conversations of its own and is not counted here. ',
-      'Claude Code deletes conversations after their account\'s cleanupPeriodDays (30 days unless changed), so older days are empty.'));
+      'Counted from each reply in the conversations Claude Code and Codex keep on this computer. Work done by sub-agents is in conversations of its own and is not counted here. ',
+      'Claude Code deletes conversations after their account\'s cleanupPeriodDays (30 days unless changed), so older days are empty. Codex keeps them until they are deleted.'));
 }
 
 // The last year, a column a week, Monday at the top.
@@ -1429,7 +1439,7 @@ function renameBox(e) {
     $('#content').focus({ preventScroll: true });
     if (!save || value === e.name || (!value && !e.renamed)) return;
     await act(() => api('/api/sessions/rename', { account: e.account, sessionId: e.sessionId, title: value }),
-      value ? `Renamed to ${value}.` : 'Back to Claude Code\'s own title.');
+      value ? `Renamed to ${value}.` : `Back to ${toolName(e.account)}'s own title.`);
     loadHistory();
   };
   const box = h('input', { type: 'text', class: 'rename', value: e.name, 'aria-label': 'Session name', spellcheck: false,
@@ -1618,7 +1628,7 @@ window.addEventListener('cc-settings-closed', () => {
 });
 window.addEventListener('cc-stopped', () => {
   S.stopped = true;
-  $('#content').replaceChildren(h('p', { class: 'empty' }, 'Claude Sessions has stopped. Run it again from a terminal to come back here.'));
+  $('#content').replaceChildren(h('p', { class: 'empty' }, 'Paddock has stopped. Run it again from a terminal to come back here.'));
 });
 
 refresh().then(loadHistory);

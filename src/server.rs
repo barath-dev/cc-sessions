@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::accounts::{self, Account};
-use crate::claude::{self, AuthInfo};
+use crate::tools::{self, AuthInfo, Tool};
 use crate::closing;
 use crate::editors;
 use crate::history::{self, Artifact, Tokens};
@@ -30,7 +30,7 @@ use crate::sessions::{self, Session};
 use crate::store::{state_dir, state_file};
 use crate::titles;
 use crate::update;
-use crate::util::{err, expand_tilde, log_stamp, now_ms, tilde, Error, Result};
+use crate::util::{err, expand_tilde, log_stamp, now_ms, setting, tilde, Error, Result};
 
 pub const HOST: &str = "127.0.0.1";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -63,7 +63,7 @@ const UI: &[(&str, &str, &[u8])] = &[
 ];
 
 pub fn port() -> u16 {
-    std::env::var("CC_SESSIONS_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or_else(|| accounts::load_config().port)
+    setting("PORT").and_then(|p| p.to_str()?.parse().ok()).unwrap_or_else(|| accounts::load_config().port)
 }
 
 pub fn pid_file() -> PathBuf {
@@ -156,7 +156,7 @@ impl App {
         }
     }
 
-    /// Current sessions. `claude agents` only runs when something changed on disk.
+    /// Current sessions. `claude agents` only runs when something changed on disk (or in the running Codex sessions).
     fn sessions(&self, force: bool) -> Result<Listing> {
         let mut cache = self.sessions.lock().unwrap();
         let accounts = accounts::load_accounts(false)?;
@@ -188,7 +188,7 @@ impl App {
         let stale = cache.at.is_none_or(|at| at.elapsed() > max_age);
         if stale || accounts.iter().any(|a| !cache.by_dir.contains_key(&a.dir)) {
             let infos: Vec<AuthInfo> = thread::scope(|scope| {
-                let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || claude::auth_status(acc))).collect();
+                let handles: Vec<_> = accounts.iter().map(|acc| scope.spawn(move || tools::auth_status(acc))).collect();
                 handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
             });
             cache.by_dir = accounts.iter().map(|a| a.dir.clone()).zip(infos).collect();
@@ -211,6 +211,8 @@ impl App {
                 let info = if acc.removed { AuthInfo::default() } else { auth.get(&acc.dir).cloned().unwrap_or_default() };
                 json!({
                     "name": acc.name,
+                    "tool": acc.tool,
+                    "start": acc.start_command(),
                     "alias": acc.alias,
                     "color": acc.color,
                     "dir": tilde(&acc.dir),
@@ -230,7 +232,10 @@ impl App {
         Ok(json!({
             "accounts": accounts,
             "sessions": sessions.iter().map(public).collect::<Vec<_>>(),
-            "unregistered": accounts::unregistered_folders()?.iter().map(|p| tilde(p)).collect::<Vec<_>>(),
+            "unregistered": accounts::unregistered_folders()?
+                .iter()
+                .map(|f| json!({ "dir": tilde(&f.dir), "tool": f.tool, "name": f.name }))
+                .collect::<Vec<_>>(),
             "pinnedFolders": Pins::load()?.folders(),
             "platform": {
                 "os": os::OS_NAME,
@@ -274,6 +279,7 @@ impl App {
                 let live = listing.0.iter().any(|s| s.live && s.account == item.account && s.session_id == item.session_id);
                 Some(json!({
                     "account": item.account,
+                    "tool": item.tool,
                     "id": item.id,
                     "sessionId": item.session_id,
                     "title": item.title,
@@ -532,7 +538,11 @@ impl App {
                 Ok(update::status())
             }
             "/api/accounts/add" => {
-                let (acc, created) = accounts::add_account(need("name")?, text("alias"), text("folder"))?;
+                let tool = match text("tool") {
+                    None => Tool::Claude,
+                    Some(id) => Tool::from_id(id).ok_or_else(|| Error(format!("Unknown tool '{id}'.")))?,
+                };
+                let (acc, created) = accounts::add_account(need("name")?, text("alias"), text("folder"), tool)?;
                 let mut out = self.changed(acc);
                 out["created"] = json!(created);
                 Ok(out)
@@ -614,7 +624,7 @@ fn respond_json(request: Request, status: u16, value: &Value) {
 fn static_file(path: &str) -> Option<(&'static str, Vec<u8>)> {
     let (_, content_type, bytes) = UI.iter().find(|(route, ..)| *route == path)?;
     // For working on the page without rebuilding.
-    if let Some(dir) = std::env::var_os("CC_SESSIONS_UI_DIR") {
+    if let Some(dir) = setting("UI_DIR") {
         let name = match path {
             "/" => "index.html",
             "/finder" | "/concept" => "concept.html",
@@ -654,7 +664,9 @@ fn handle(app: &App, mut request: Request) {
 
     let result = if is_get {
         match path.as_str() {
-            "/api/ping" => Ok(json!({ "ok": true, "app": "cc-sessions", "version": VERSION, "pid": std::process::id() })),
+            // "cc-sessions" stays its name here: a 2.7 command that has just updated the
+            // program waits for a server that answers to it.
+            "/api/ping" => Ok(json!({ "ok": true, "app": crate::util::OLD_NAME, "version": VERSION, "pid": std::process::id() })),
             "/api/state" => app.state(),
             "/api/history" => app.history(),
             "/api/usage" => app.usage(),
@@ -694,7 +706,7 @@ fn handle(app: &App, mut request: Request) {
 }
 
 fn idle_limit() -> Option<Duration> {
-    if let Some(seconds) = std::env::var("CC_SESSIONS_IDLE_SECONDS").ok().and_then(|s| s.parse::<u64>().ok()) {
+    if let Some(seconds) = setting("IDLE_SECONDS").and_then(|s| s.to_str()?.parse::<u64>().ok()) {
         return (seconds > 0).then(|| Duration::from_secs(seconds));
     }
     let minutes = accounts::load_config().idle_minutes;
@@ -720,7 +732,7 @@ pub fn serve() -> Result<()> {
 
     fs::create_dir_all(state_dir())?;
     fs::write(pid_file(), format!("{}\n", std::process::id()))?;
-    eprintln!("{} cc-sessions {VERSION} listening on http://{HOST}:{port} (pid {})", log_stamp(), std::process::id());
+    eprintln!("{} paddock {VERSION} listening on http://{HOST}:{port} (pid {})", log_stamp(), std::process::id());
 
     let done = Arc::new(AtomicBool::new(false));
     let workers: Vec<_> = (0..WORKERS)
@@ -782,16 +794,16 @@ pub fn serve() -> Result<()> {
     if app.restart.load(Ordering::SeqCst) {
         // The listener is gone; the new program takes the port over.
         drop(server);
-        eprintln!("{} cc-sessions {VERSION} stopped; starting the new version", log_stamp());
+        eprintln!("{} paddock {VERSION} stopped; starting the new version", log_stamp());
         return start_detached(&os::installed_program());
     }
-    eprintln!("{} cc-sessions stopped ({reason})", log_stamp());
+    eprintln!("{} paddock stopped ({reason})", log_stamp());
     Ok(())
 }
 
 /// How long after starting the first update check waits, so starting stays quick.
 fn update_delay() -> Duration {
-    let seconds = std::env::var("CC_SESSIONS_UPDATE_DELAY").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
+    let seconds = setting("UPDATE_DELAY").and_then(|s| s.to_str()?.parse().ok()).unwrap_or(60);
     Duration::from_secs(seconds)
 }
 

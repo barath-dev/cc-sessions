@@ -1,11 +1,11 @@
 name: Report a problem
-description: Something in cc-sessions is not working as it should.
+description: Something in Paddock is not working as it should.
 labels: [bug]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time. **Report a problem** in Settings › General (or `cc-sessions report`) fills in the version and system for you.
+        Thanks for taking the time. **Report a problem** in Settings › General (or `paddock report`) fills in the version and system for you.
         Please leave out anything private: folder names, session names, prompts, emails.
   - type: textarea
     id: what
@@ -29,8 +29,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: cc-sessions version
-      description: "`cc-sessions --version`, or Settings › General › Updates."
+      label: Paddock version
+      description: "`paddock --version`, or Settings › General › Updates."
       placeholder: "2.6.0"
     validations:
       required: true
@@ -42,6 +42,6 @@ body:
   - type: textarea
     id: diagnostics
     attributes:
-      label: Details from cc-sessions
+      label: Details from Paddock
       description: Filled in by Report a problem. Nothing personal is included.
       render: text

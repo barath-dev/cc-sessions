@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-const EXE: &str = env!("CARGO_BIN_EXE_cc-sessions");
+const EXE: &str = env!("CARGO_BIN_EXE_paddock");
 const FAKE_CLAUDE: &str = env!("CARGO_BIN_EXE_fake-claude");
 
 fn now_ms() -> i64 {
@@ -102,7 +102,7 @@ struct Machine {
 
 impl Machine {
     fn new(name: &str, port: u16) -> Machine {
-        let root = std::env::temp_dir().join(format!("cc-sessions-e2e-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("paddock-e2e-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let home = root.join("home");
         let bin = root.join("bin");
@@ -139,20 +139,23 @@ impl Machine {
                 cmd.env_remove(key);
             }
         }
+        // Without folders that hold a paddock program: on Windows cargo puts the
+        // one it built on PATH, where it looks like the command is already taken.
         let mut path = vec![self.root.join("bin")];
-        path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()));
+        let program = format!("paddock{}", std::env::consts::EXE_SUFFIX);
+        path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()).filter(|dir| !dir.join(&program).exists()));
         cmd.env("PATH", std::env::join_paths(path).unwrap())
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("APPDATA", self.root.join("appdata"))
             .env("LOCALAPPDATA", self.root.join("localappdata"))
             .env("SHELL", "/bin/zsh")
-            .env("CC_SESSIONS_HOME", &self.state)
-            .env("CC_SESSIONS_PORT", self.port.to_string())
-            .env("CC_SESSIONS_SKIP_PATH", "1")
+            .env("PADDOCK_HOME", &self.state)
+            .env("PADDOCK_PORT", self.port.to_string())
+            .env("PADDOCK_SKIP_PATH", "1")
             .env("FAKE_CLAUDE_LOG", self.root.join("claude-calls.log"))
             // Never ask GitHub from a test: a port nothing listens on fails at once.
-            .env("CC_SESSIONS_UPDATE_BASE", "http://127.0.0.1:9")
+            .env("PADDOCK_UPDATE_BASE", "http://127.0.0.1:9")
             .current_dir(&self.home);
         cmd
     }
@@ -160,9 +163,9 @@ impl Machine {
     /// Where the installer would put the program in this home.
     fn installed(&self) -> PathBuf {
         if cfg!(windows) {
-            self.root.join("localappdata").join("cc-sessions").join("cc-sessions.exe")
+            self.root.join("localappdata").join("paddock").join("paddock.exe")
         } else {
-            self.home.join(".local").join("share").join("cc-sessions").join("cc-sessions")
+            self.home.join(".local").join("share").join("paddock").join("paddock")
         }
     }
 
@@ -197,7 +200,8 @@ impl Machine {
         }
         let mut files = BTreeMap::new();
         for entry in fs::read_dir(&self.home).into_iter().flatten().flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".claude") {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".claude") || name.starts_with(".codex") {
                 walk(&entry.path(), &mut files);
             }
         }
@@ -420,7 +424,7 @@ fn account_lifecycle_keeps_folders() {
     let demo = registry["accounts"].as_array().unwrap().iter().find(|a| a["name"] == "demo").unwrap();
     assert_eq!(demo["alias"], "claude-demo");
     if cfg!(windows) {
-        let bin = m.root.join("localappdata").join("cc-sessions").join("bin");
+        let bin = m.root.join("localappdata").join("paddock").join("bin");
         assert!(bin.join("claude-demo.cmd").exists() && !bin.join("claude-scratch.cmd").exists());
     } else {
         let aliases = fs::read_to_string(m.state.join("aliases.sh")).unwrap();
@@ -471,6 +475,84 @@ fn history_lists_saved_conversations() {
 
     let by_date = text(&m.run(&["history", "--by-date"]));
     assert!(by_date.contains("1 artifact") && by_date.contains("/work/app") && by_date.contains("Login bug fix"), "{by_date}");
+}
+
+#[test]
+fn codex_sessions_beside_claude_code() {
+    let mut m = Machine::new("codex", 47820);
+    let codex = m.home.join(".codex");
+    let day = codex.join("sessions").join("2026").join("11").join("17");
+    fs::create_dir_all(&day).unwrap();
+    let project = m.root.join("app");
+    fs::create_dir_all(&project).unwrap();
+    let id = "01a1f000-1234-7abc-8def-0123456789ab";
+    let rollout = day.join(format!("rollout-2026-11-17T10-00-00-{id}.jsonl"));
+    let lines = [
+        json!({"timestamp": "2026-11-17T09:00:00.000Z", "type": "session_meta", "payload": {"id": id, "cwd": project, "timestamp": "2026-11-17T09:00:00.000Z"}}),
+        json!({"timestamp": "2026-11-17T09:00:01.000Z", "type": "turn_context", "payload": {"cwd": project, "model": "gpt-6"}}),
+        json!({"timestamp": "2026-11-17T09:00:01.000Z", "type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "make the tests pass"}]}}),
+        json!({"timestamp": "2026-11-17T09:00:02.000Z", "type": "event_msg", "payload": {"type": "task_started"}}),
+        json!({"timestamp": "2026-11-17T09:00:09.000Z", "type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 1000, "cached_input_tokens": 600, "output_tokens": 50}}}}),
+    ];
+    fs::write(&rollout, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n") + "\n").unwrap();
+    fs::write(codex.join("session_index.jsonl"), json!({"id": id, "thread_name": "Make the tests pass"}).to_string() + "\n").unwrap();
+    // {"email":"me@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus"}}, as Codex keeps it.
+    let claims = "eyJlbWFpbCI6Im1lQGV4YW1wbGUuY29tIiwiaHR0cHM6Ly9hcGkub3BlbmFpLmNvbS9hdXRoIjp7ImNoYXRncHRfcGxhbl90eXBlIjoicGx1cyJ9fQ";
+    fs::write(codex.join("auth.json"), json!({"auth_mode": "chatgpt", "tokens": {"id_token": format!("x.{claims}.sig")}}).to_string()).unwrap();
+    m.seal();
+
+    // A first run registers ~/.codex beside the Claude Code folders.
+    let accounts = text(&m.run(&["account", "list"]));
+    assert!(accounts.contains("codex") && accounts.contains("Codex") && accounts.contains("me@example.com"), "{accounts}");
+    assert!(accounts.contains("default") && accounts.contains("work"), "{accounts}");
+
+    let items = m.json(&["history", "--json"]);
+    let item = items.as_array().unwrap().iter().find(|i| i["account"] == "codex").expect("the Codex conversation is listed");
+    assert_eq!(item["tool"], "codex");
+    assert_eq!(item["title"], "Make the tests pass");
+    assert_eq!(item["id"], "456789ab", "short ids come from the random end of Codex's ids");
+    assert_eq!(item["prompts"], 1);
+    assert_eq!(item["tokens"]["cacheRead"], 600);
+
+    // A running Codex session is found by the conversation it holds open, and can be closed.
+    if cfg!(unix) {
+        let program = m.root.join("bin").join("codex");
+        fs::copy(FAKE_CLAUDE, &program).unwrap();
+        let mut holder = Command::new(&program).arg("hold").arg(&rollout).current_dir(&project).stdin(Stdio::null()).spawn().unwrap();
+        let pid = holder.id();
+        // Waited on as a shell would, so once it exits it is gone rather than left a zombie.
+        let ended = Arc::new(AtomicBool::new(false));
+        let reaper = {
+            let ended = ended.clone();
+            thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                while holder.try_wait().unwrap().is_none() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                let _ = holder.kill();
+                let _ = holder.wait();
+                ended.store(true, Ordering::SeqCst);
+            })
+        };
+        // A program copied a moment ago can take a while to start (macOS checks it first).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut listed = m.json(&["list", "--json"]);
+        while listed.as_array().is_some_and(|l| l.is_empty()) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(200));
+            listed = m.json(&["list", "--json"]);
+        }
+        let sess = find(&listed, "456789ab");
+        assert_eq!((sess["tool"].as_str(), sess["status"].as_str()), (Some("codex"), Some("working")), "{sess}");
+        assert_eq!(sess["name"], "Make the tests pass");
+        assert_eq!(sess["pid"], pid);
+        assert!(sess["resumeCommand"].as_str().unwrap().ends_with(&format!("codex resume {id}")), "{sess}");
+
+        let closed = m.run_answering(&["close", "codex:456789ab"], "y\n");
+        assert!(closed.status.success(), "{}", text(&closed));
+        reaper.join().unwrap();
+        assert!(ended.load(Ordering::SeqCst), "{}", text(&closed));
+        assert_eq!(find(&m.json(&["list", "--closed", "--json"]), "456789ab")["status"], "closed");
+    }
 }
 
 #[test]
@@ -589,17 +671,28 @@ fn usage_by_session_for_a_day() {
         reply("msg_2", "2026-11-11T06:30:00.000Z", 900),
     ];
     fs::write(project.join(format!("{session_id}.jsonl")), transcript.join("\n")).unwrap();
+    // Its sub-agents, one of them a workflow's, each with a reply written over two lines.
+    let agents = project.join(session_id).join("subagents");
+    fs::create_dir_all(agents.join("workflows").join("wf_1")).unwrap();
+    let twice = |id: &str, at: &str, out: u64| [reply(id, at, out), reply(id, at, out)].join("\n");
+    fs::write(agents.join("agent-a1.jsonl"), twice("msg_3", "2026-11-10T07:00:00.000Z", 40)).unwrap();
+    fs::write(agents.join("workflows").join("wf_1").join("agent-a2.jsonl"), twice("msg_4", "2026-11-11T07:00:00.000Z", 5)).unwrap();
     m.seal();
 
     assert!(m.run(&["--no-open"]).status.success());
     let token = m.token();
+    let (_, body) = m.get("/api/history", Some(&token), None);
+    let history: Value = serde_json::from_str(&body).unwrap();
+    let items = history["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "sub-agents are not sessions of their own: {body}");
+    assert_eq!(items[0]["tokens"]["output"], 1045, "the session's tokens include its sub-agents', each reply once");
     // 2026-11-10 00:00 UTC is hour 498408.
     let (status, body) = m.get("/api/usage/sessions?from=498408&to=498432", Some(&token), None);
     assert_eq!(status, 200, "{body}");
     let day: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(day["sessions"].as_array().unwrap().len(), 1);
     assert_eq!(day["sessions"][0]["sessionId"], session_id);
-    assert_eq!(day["sessions"][0]["tokens"]["output"], 100, "only that day's reply: {body}");
+    assert_eq!(day["sessions"][0]["tokens"]["output"], 140, "only that day's replies: {body}");
     let (_, body) = m.get("/api/usage/sessions?from=400000&to=400024", Some(&token), None);
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["sessions"], json!([]));
     assert_eq!(m.get("/api/usage/sessions", Some(&token), None).0, 400, "hours are required");
@@ -770,7 +863,7 @@ fn release_server(port: u16, files: Files) -> String {
 fn asset_name() -> String {
     let os = if cfg!(target_os = "macos") { "macos" } else if cfg!(windows) { "windows" } else { "linux" };
     let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { std::env::consts::ARCH };
-    format!("cc-sessions-{os}-{arch}{}", if cfg!(windows) { ".exe" } else { "" })
+    format!("paddock-{os}-{arch}{}", if cfg!(windows) { ".exe" } else { "" })
 }
 
 /// SHA-256 with the system's own tool, to write the checksum list the way a release does.
@@ -803,12 +896,12 @@ fn update_installs_a_checked_release() {
     fs::create_dir_all(installed.parent().unwrap()).unwrap();
     fs::copy(EXE, &installed).unwrap();
     m.seal();
-    // The "new version" is the fake claude, told to say it is cc-sessions 99.0.0.
+    // The "new version" is the fake claude, told to say it is paddock 99.0.0.
     let files: Files = Arc::default();
     let base = release_server(47816, files.clone());
     publish(&files, "v99.0.0", Path::new(FAKE_CLAUDE));
     let update = |exe: &Path, args: &[&str]| {
-        m.command_at(exe, args).env("CC_SESSIONS_UPDATE_BASE", &base).env("FAKE_VERSION_LINE", "cc-sessions 99.0.0").stdin(Stdio::null()).output().unwrap()
+        m.command_at(exe, args).env("PADDOCK_UPDATE_BASE", &base).env("FAKE_VERSION_LINE", "paddock 99.0.0").stdin(Stdio::null()).output().unwrap()
     };
     let original = fs::read(EXE).unwrap();
 
@@ -860,7 +953,7 @@ fn server_restarts_on_an_update() {
     let base = release_server(47818, files.clone());
     publish(&files, "v99.0.0", Path::new(EXE));
 
-    let started = m.command_at(&installed, &["--no-open"]).env("CC_SESSIONS_UPDATE_BASE", &base).stdin(Stdio::null()).output().unwrap();
+    let started = m.command_at(&installed, &["--no-open"]).env("PADDOCK_UPDATE_BASE", &base).stdin(Stdio::null()).output().unwrap();
     assert!(started.status.success(), "{}", text(&started));
     let token = m.token();
     let before = server_pid(m.port, &token).expect("the server answers");
@@ -944,7 +1037,7 @@ fn server_guards_and_disconnect() {
 fn server_stops_itself_when_no_page_is_open() {
     let mut m = Machine::new("idle", 47809);
     m.seal();
-    let started = m.command(&["--no-open"]).env("CC_SESSIONS_IDLE_SECONDS", "2").stdin(Stdio::null()).output().unwrap();
+    let started = m.command(&["--no-open"]).env("PADDOCK_IDLE_SECONDS", "2").stdin(Stdio::null()).output().unwrap();
     assert!(started.status.success(), "{}", text(&started));
     assert!(m.state.join("ui.pid").exists());
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -973,7 +1066,7 @@ fn setup_can_be_repeated() {
     assert_eq!(names, ["default", "work"]);
 
     if cfg!(windows) {
-        assert!(m.root.join("localappdata").join("cc-sessions").join("bin").join("cs-test.cmd").exists());
+        assert!(m.root.join("localappdata").join("paddock").join("bin").join("cs-test.cmd").exists());
     } else {
         // An alias the person already had for the folder keeps its name.
         assert_eq!(registry["accounts"][1]["alias"], "kt");
@@ -981,7 +1074,7 @@ fn setup_can_be_repeated() {
         let rc = fs::read_to_string(m.home.join(".zshrc")).unwrap();
         assert!(rc.starts_with("export KEEP=1\n"), "{rc}");
         assert_eq!(rc.matches("aliases.sh").count(), 2, "one line, naming the file twice: {rc}");
-        assert!(m.home.join(".zshrc.cc-sessions-backup").exists());
+        assert!(m.home.join(".zshrc.paddock-backup").exists());
 
         // A second run changes nothing and renames the command cleanly.
         let second = m.run(&["setup", "--yes", "--command", "cs-two"]);
@@ -992,4 +1085,84 @@ fn setup_can_be_repeated() {
         let config: Value = serde_json::from_str(&fs::read_to_string(m.state.join("config.json")).unwrap()).unwrap();
         assert_eq!(config["port"], 4999, "answers that were not given again are kept");
     }
+}
+
+#[test]
+fn an_install_from_before_the_rename_moves_over() {
+    let m = Machine::new("old-name", 47830);
+    // As cc-sessions 2.7 left it: the program and its command, its settings, the
+    // app shortcut and fish's shortcut file.
+    let (old_exe, old_state) = if cfg!(windows) {
+        (m.root.join("localappdata").join("cc-sessions").join("cc-sessions.exe"), m.root.join("appdata").join("cc-sessions"))
+    } else {
+        (m.home.join(".local").join("share").join("cc-sessions").join("cc-sessions"), m.home.join(".config").join("cc-sessions"))
+    };
+    fs::create_dir_all(old_exe.parent().unwrap()).unwrap();
+    fs::copy(EXE, &old_exe).unwrap();
+    let bin = m.home.join(".local").join("bin");
+    if cfg!(windows) {
+        let bin = old_exe.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("cc-sessions.cmd"), format!("@echo off\r\nrem cc-sessions command. Do not edit.\r\n\"{}\" %*\r\n", old_exe.display())).unwrap();
+    } else {
+        fs::create_dir_all(&bin).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&old_exe, bin.join("cc-sessions")).unwrap();
+    }
+    fs::create_dir_all(&old_state).unwrap();
+    let registry = json!({ "version": 1, "accounts": [{ "name": "default", "dir": m.home.join(".claude").to_string_lossy() }] });
+    fs::write(old_state.join("accounts.json"), registry.to_string()).unwrap();
+    fs::write(old_state.join("config.json"), json!({ "command": "cc-sessions", "port": 47830, "shortcut": true, "manageAliases": true }).to_string()).unwrap();
+    let app = m.home.join("Applications").join("Claude Sessions.app");
+    let desktop = m.home.join(".local").join("share").join("applications").join("cc-sessions.desktop");
+    if cfg!(target_os = "macos") {
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        fs::write(app.join("Contents").join("Info.plist"), "<string>dev.cc-sessions.launcher</string>").unwrap();
+    } else if cfg!(unix) {
+        fs::create_dir_all(desktop.parent().unwrap()).unwrap();
+        fs::write(&desktop, "[Desktop Entry]\nName=Claude Sessions\n").unwrap();
+    }
+    let fish = m.home.join(".config").join("fish").join("conf.d");
+    if cfg!(unix) {
+        fs::create_dir_all(&fish).unwrap();
+        fs::write(fish.join("cc-sessions.fish"), "# Generated by cc-sessions from its account registry.\n").unwrap();
+    }
+
+    // The first run of the new program, auto-updated in the old place, with no PADDOCK_HOME.
+    let run = |args: &[&str]| m.command_at(&old_exe, args).env_remove("PADDOCK_HOME").stdin(Stdio::null()).output().unwrap();
+    let listed = run(&["account", "list"]);
+    assert!(listed.status.success() && text(&listed).contains("default"), "{}", text(&listed));
+
+    let new_state = old_state.with_file_name("paddock");
+    assert!(new_state.join("accounts.json").exists(), "the settings moved");
+    let config: Value = serde_json::from_str(&fs::read_to_string(new_state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["command"], "paddock");
+    assert_eq!(config["port"], 47830, "the rest of the settings are kept");
+    if cfg!(windows) {
+        let bin = old_exe.parent().unwrap().join("bin");
+        assert!(bin.join("paddock.cmd").exists() && bin.join("cc-sessions.cmd").exists(), "both commands, in the folder already on PATH");
+    } else {
+        assert!(fs::symlink_metadata(&old_state).unwrap().file_type().is_symlink(), "the old path still leads to the settings");
+        assert_eq!(fs::read_link(bin.join("paddock")).unwrap(), old_exe, "paddock starts the same program");
+        assert_eq!(fs::read_link(bin.join("cc-sessions")).unwrap(), old_exe, "and cc-sessions still does");
+        assert!(!fish.join("cc-sessions.fish").exists() && fish.join("paddock.fish").exists());
+    }
+    if cfg!(target_os = "macos") {
+        assert!(!app.exists() && m.home.join("Applications").join("Paddock.app").exists());
+    } else if cfg!(unix) {
+        assert!(!desktop.exists() && desktop.with_file_name("paddock.desktop").exists());
+    }
+
+    // A 2.7 updater checks the download it saved as cc-sessions-<system> by its version line.
+    let saved = old_exe.with_file_name(if cfg!(windows) { "cc-sessions-windows-x86_64.exe" } else { "cc-sessions-macos-arm64" });
+    fs::copy(EXE, &saved).unwrap();
+    let version = Command::new(&saved).arg("--version").output().unwrap();
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("cc-sessions 2."), "{}", text(&version));
+    let version = m.run(&["--version"]);
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("paddock 2."), "{}", text(&version));
+
+    // Once moved, nothing is moved again.
+    let again = run(&["account", "list"]);
+    assert!(again.status.success() && text(&again).contains("default"), "{}", text(&again));
+    assert!(new_state.join("accounts.json").exists());
 }

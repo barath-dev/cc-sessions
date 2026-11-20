@@ -1,5 +1,20 @@
 [
   {
+    "version": "2.8.0",
+    "date": "2026-11-17",
+    "title": "Now called Paddock, with Codex sessions beside Claude Code",
+    "notes": [
+      "Claude Sessions is now Paddock, since it is no longer only for Claude: the command is paddock. cc-sessions still works, and your accounts, settings and shortcuts have moved over by themselves.",
+      "Codex accounts: ~/.codex and any ~/.codex-* folder can be added as accounts (Settings › Accounts lists them under folders not registered yet), or with: paddock account add NAME --tool codex.",
+      "Saved Codex conversations are listed, searched and resumed (codex resume) beside Claude Code's, with Codex's own titles, and counted in Usage by model.",
+      "Running Codex sessions show as open, working or waiting. Close stops the turn Codex is working on and closes its window; a turn Codex carries on with after its window was closed is listed too, and can be stopped. On Windows, running Codex sessions are not found yet.",
+      "The loop check reads Codex's patches and failing commands too.",
+      "Accounts show which tool they are for; a Codex account whose name does not say so carries a small Codex mark.",
+      "Fixed: tokens used by sub-agents (and workflows' agents) were left out of Usage. They now count with the session that started them.",
+      "Fixed: on macOS, a key pressed while Resume or Log in opened a terminal window could make the command run as a different account. The line is now cleared first."
+    ]
+  },
+  {
     "version": "2.7.2",
     "date": "2026-11-16",
     "title": "What's new, in the page",

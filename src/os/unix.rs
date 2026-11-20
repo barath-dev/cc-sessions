@@ -12,9 +12,9 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{which, ShellHook};
-use crate::shell::{self, Launch};
+use crate::shell::{self, Launch, Shortcut};
 use crate::store;
-use crate::util::{err, home, path_str, squash, tilde, Error, Result};
+use crate::util::{err, home, path_str, squash, tilde, Error, Result, NAME, OLD_NAME};
 use crate::{proc, store::state_dir};
 
 pub const IS_WINDOWS: bool = false;
@@ -27,20 +27,29 @@ pub fn executable_extensions() -> Vec<String> {
 }
 
 pub fn default_state_dir() -> PathBuf {
-    home().join(".config").join("cc-sessions")
+    home().join(".config").join(NAME)
+}
+
+/// The settings folder from before the rename.
+pub fn old_state_dir() -> PathBuf {
+    home().join(".config").join(OLD_NAME)
 }
 
 fn command_dir() -> PathBuf {
     home().join(".local").join("bin")
 }
 
-pub fn claude_fallbacks() -> Vec<PathBuf> {
-    vec![
-        PathBuf::from("/opt/homebrew/bin/claude"),
-        PathBuf::from("/usr/local/bin/claude"),
-        home().join(".local/bin/claude"),
-        home().join(".claude/local/claude"),
-    ]
+/// Where a tool's command may be when it is not on PATH (as for a server started at login).
+pub fn program_fallbacks(program: &str) -> Vec<PathBuf> {
+    let mut found = vec![
+        PathBuf::from("/opt/homebrew/bin").join(program),
+        PathBuf::from("/usr/local/bin").join(program),
+        home().join(".local/bin").join(program),
+    ];
+    if program == "claude" {
+        found.push(home().join(".claude/local/claude"));
+    }
+    found
 }
 
 pub fn lock_exclusive(file: &File) -> std::io::Result<()> {
@@ -58,9 +67,25 @@ pub fn pid_alive(pid: u32) -> bool {
     }
     // SAFETY: signal 0 only checks that the process exists.
     if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
-        return true;
+        return !zombie(pid);
     }
     std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// A process that has exited but not been collected by its parent, as happens in a
+/// container whose first process never collects them. It still answers signal 0.
+#[cfg(target_os = "linux")]
+fn zombie(pid: u32) -> bool {
+    // "pid (name) S ...": the state follows the name, which may itself hold spaces and brackets.
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| stat.rsplit_once(')').and_then(|(_, rest)| rest.trim_start().chars().next()))
+        == Some('Z')
+}
+
+#[cfg(not(target_os = "linux"))]
+fn zombie(_pid: u32) -> bool {
+    false
 }
 
 fn ps(pid: u32, field: &str) -> String {
@@ -88,6 +113,81 @@ pub fn parent_pid(pid: u32) -> Option<u32> {
     ps(pid, "ppid=").parse().ok()
 }
 
+/// "[[dd-]hh:]mm:ss", as `ps -o etime` writes how long a process has run, in seconds.
+fn elapsed_seconds(text: &str) -> Option<i64> {
+    let (days, clock) = match text.split_once('-') {
+        Some((d, rest)) => (d.parse::<i64>().ok()?, rest),
+        None => (0, text),
+    };
+    let parts: Vec<i64> = clock.split(':').map(|p| p.parse().ok()).collect::<Option<_>>()?;
+    let seconds = parts.iter().fold(0, |total, part| total * 60 + part);
+    (!parts.is_empty() && parts.len() <= 3).then_some(days * 86_400 + seconds)
+}
+
+/// Every process of this user, with its command line.
+pub fn processes() -> Vec<super::Process> {
+    let mut cmd = Command::new("ps");
+    // -x includes processes without a terminal; ww keeps long command lines whole.
+    cmd.args(["-x", "-ww", "-o", "pid=,etime=,args=", "-U"]).arg(unsafe { libc::getuid() }.to_string()).env("LC_ALL", "C");
+    let Ok(out) = proc::run(&mut cmd, Duration::from_secs(5)) else { return Vec::new() };
+    let now = crate::util::now_ms();
+    out.stdout
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let pid = words.next()?.parse().ok()?;
+            let ran = words.next().and_then(elapsed_seconds);
+            let args = words.collect::<Vec<_>>().join(" ");
+            Some(super::Process { pid, args, started_at: ran.map(|s| now - s * 1000) })
+        })
+        .collect()
+}
+
+/// The folder each process runs in and the files it has open.
+#[cfg(target_os = "macos")]
+pub fn open_files(pids: &[u32]) -> std::collections::HashMap<u32, super::OpenFiles> {
+    let mut found = std::collections::HashMap::new();
+    if pids.is_empty() {
+        return found;
+    }
+    let list = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let mut cmd = Command::new("lsof");
+    // -F pfn: one field to a line, p for the process, f for the descriptor, n for the path.
+    cmd.args(["-n", "-P", "-w", "-F", "pfn", "-p", &list]);
+    let Ok(out) = proc::run(&mut cmd, Duration::from_secs(10)) else { return found };
+    let (mut pid, mut cwd_next) = (0, false);
+    for line in out.stdout.lines() {
+        let (tag, value) = line.split_at(line.len().min(1));
+        match tag {
+            "p" => pid = value.parse().unwrap_or(0),
+            "f" => cwd_next = value == "cwd",
+            "n" if pid != 0 => {
+                let entry: &mut super::OpenFiles = found.entry(pid).or_default();
+                if cwd_next {
+                    entry.cwd = Some(PathBuf::from(value));
+                } else if value.starts_with('/') {
+                    entry.files.push(PathBuf::from(value));
+                }
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn open_files(pids: &[u32]) -> std::collections::HashMap<u32, super::OpenFiles> {
+    pids.iter()
+        .map(|pid| {
+            let base = PathBuf::from(format!("/proc/{pid}"));
+            let files = fs::read_dir(base.join("fd"))
+                .map(|fds| fds.flatten().filter_map(|fd| fs::read_link(fd.path()).ok()).filter(|p| p.is_absolute()).collect())
+                .unwrap_or_default();
+            (*pid, super::OpenFiles { cwd: fs::read_link(base.join("cwd")).ok(), files })
+        })
+        .collect()
+}
+
 /// Ask the process to exit. It can finish what it is writing first.
 pub fn terminate(pid: u32) -> Result<()> {
     // SAFETY: plain kill(2) on a pid the caller has verified.
@@ -95,6 +195,31 @@ pub fn terminate(pid: u32) -> Result<()> {
         Ok(())
     } else {
         Err(Error(format!("could not signal pid {pid}: {}", std::io::Error::last_os_error())))
+    }
+}
+
+/// The process groups of `pid`'s children that each lead a group of their own. A program
+/// that starts commands that way (Codex) leaves them running when it is stopped.
+pub fn child_groups(pid: u32) -> Vec<u32> {
+    let mut cmd = Command::new("ps");
+    cmd.args(["-x", "-o", "pid=,ppid=,pgid=", "-U"]).arg(unsafe { libc::getuid() }.to_string()).env("LC_ALL", "C");
+    let Ok(out) = proc::run(&mut cmd, Duration::from_secs(5)) else { return Vec::new() };
+    out.stdout
+        .lines()
+        .filter_map(|line| {
+            let ids: Vec<u32> = line.split_whitespace().filter_map(|w| w.parse().ok()).collect();
+            matches!(ids[..], [child, parent, group] if parent == pid && group == child).then_some(ids[0])
+        })
+        .collect()
+}
+
+/// Ask every process in a group to exit.
+pub fn terminate_group(group: u32) -> Result<()> {
+    // SAFETY: plain kill(2) on a process group the caller found under a verified pid.
+    if unsafe { libc::kill(-(group as libc::pid_t), libc::SIGTERM) } == 0 {
+        Ok(())
+    } else {
+        Err(Error(format!("could not signal group {group}: {}", std::io::Error::last_os_error())))
     }
 }
 
@@ -166,14 +291,22 @@ pub fn display_command(launch: &Launch) -> String {
     shell::posix(launch, true)
 }
 
-/// Where the installer puts the program.
+/// Where the installer puts the program. An install from before the rename keeps
+/// its place, `~/.local/share/cc-sessions/cc-sessions`, which the installer updates.
 pub fn installed_program() -> PathBuf {
-    home().join(".local").join("share").join("cc-sessions").join("cc-sessions")
+    let share = home().join(".local").join("share");
+    let old = share.join(OLD_NAME).join(OLD_NAME);
+    let new = share.join(NAME).join(NAME);
+    if !new.exists() && old.exists() {
+        old
+    } else {
+        new
+    }
 }
 
 /// Fetch a URL into a file with the system's curl, or wget.
 pub fn download(url: &str, to: &Path, timeout: Duration) -> Result<()> {
-    let agent = format!("cc-sessions/{}", env!("CARGO_PKG_VERSION"));
+    let agent = format!("{NAME}/{}", env!("CARGO_PKG_VERSION"));
     let seconds = timeout.as_secs().to_string();
     let mut cmd = if let Some(curl) = which("curl") {
         let mut cmd = Command::new(curl);
@@ -262,7 +395,9 @@ fn has_iterm() -> bool {
 pub fn open_terminal(launch: &Launch) -> Result<String> {
     let (app, script) = if has_iterm() { ("iTerm", ITERM_SCRIPT) } else { ("Terminal", TERMINAL_SCRIPT) };
     let mut cmd = Command::new("osascript");
-    cmd.args(["-e", script, &shell::posix(launch, false)]);
+    // The command is typed into the new window's shell. Ctrl-U first clears what
+    // reached it before, such as keys pressed as the window came to the front.
+    cmd.args(["-e", script, &format!("\u{15}{}", shell::posix(launch, false))]);
     let out = proc::run(&mut cmd, Duration::from_secs(30)).map_err(|_| {
         Error(format!("{app} did not respond. If macOS asked for permission to control it, allow it and try again."))
     })?;
@@ -332,7 +467,13 @@ fn rc_file() -> Option<PathBuf> {
 
 fn fish_conf() -> Option<PathBuf> {
     let dir = home().join(".config").join("fish");
-    dir.is_dir().then(|| dir.join("conf.d").join("cc-sessions.fish"))
+    dir.is_dir().then(|| dir.join("conf.d").join(format!("{NAME}.fish")))
+}
+
+/// The fish file written before the rename, if there is one of ours.
+pub fn old_fish_conf() -> Option<PathBuf> {
+    let file = home().join(".config").join("fish").join("conf.d").join(format!("{OLD_NAME}.fish"));
+    fs::read_to_string(&file).is_ok_and(|text| text.contains("Generated by cc-sessions")).then_some(file)
 }
 
 fn command_dir_on_path() -> bool {
@@ -340,9 +481,8 @@ fn command_dir_on_path() -> bool {
     std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d == dir)).unwrap_or(false)
 }
 
-/// Rewrite the generated shortcut files from the registry. `entries` is
-/// (alias, config folder or None for the default account).
-pub fn write_account_shortcuts(entries: &[(String, Option<String>)], manage: bool) -> Result<()> {
+/// Rewrite the generated shortcut files from the registry.
+pub fn write_account_shortcuts(entries: &[Shortcut], manage: bool) -> Result<()> {
     store::write_text(&state_dir().join("aliases.sh"), &shell::aliases_sh(entries), false)?;
     if manage {
         if let Some(fish) = fish_conf() {
@@ -377,7 +517,13 @@ pub fn shell_hook() -> Option<ShellHook> {
 // ------------------------------------------------------------------- installing
 
 fn is_our_link(path: &Path) -> bool {
-    fs::read_link(path).map(|target| target.file_name().is_some_and(|n| n == "cc-sessions")).unwrap_or(false)
+    fs::read_link(path).map(|target| target.file_name().is_some_and(|n| n == NAME || n == OLD_NAME)).unwrap_or(false)
+}
+
+/// Whether `name` is a command link of this tool's, and to which program.
+pub fn command_target(name: &str) -> Option<PathBuf> {
+    let link = command_dir().join(name);
+    is_our_link(&link).then(|| fs::read_link(&link).ok()).flatten()
 }
 
 /// Make `name` start the program: a link in `~/.local/bin`. Refuses to replace
@@ -388,7 +534,7 @@ pub fn install_command(name: &str, exe: &Path, previous: Option<&str>) -> Result
     let link = dir.join(name);
     if link.symlink_metadata().is_ok() {
         if !is_our_link(&link) {
-            return err(format!("{} already exists and is not a cc-sessions link. Pick another command name.", tilde(&path_str(&link))));
+            return err(format!("{} already exists and is not a Paddock link. Pick another command name.", tilde(&path_str(&link))));
         }
         fs::remove_file(&link)?;
     }
@@ -405,15 +551,15 @@ pub fn install_command(name: &str, exe: &Path, previous: Option<&str>) -> Result
 /// A clickable shortcut that starts the server and opens the page.
 #[cfg(target_os = "macos")]
 pub fn install_shortcut(exe: &Path) -> Result<PathBuf> {
-    let app = home().join("Applications").join("Claude Sessions.app");
+    let app = home().join("Applications").join("Paddock.app");
     let macos = app.join("Contents").join("MacOS");
     fs::create_dir_all(&macos)?;
     let plist = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Claude Sessions</string>
-  <key>CFBundleIdentifier</key><string>dev.cc-sessions.launcher</string>
+  <key>CFBundleName</key><string>Paddock</string>
+  <key>CFBundleIdentifier</key><string>dev.paddock.launcher</string>
   <key>CFBundleExecutable</key><string>launch</string>
   <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -436,18 +582,31 @@ pub fn install_shortcut(exe: &Path) -> Result<PathBuf> {
 pub fn install_shortcut(exe: &Path) -> Result<PathBuf> {
     let dir = home().join(".local").join("share").join("applications");
     fs::create_dir_all(&dir)?;
-    let entry = dir.join("cc-sessions.desktop");
+    let entry = dir.join(format!("{NAME}.desktop"));
     let icon = store::state_file("icon.png");
     fs::create_dir_all(state_dir())?;
     fs::write(&icon, include_bytes!("../../assets/icon.png"))?;
     let text = format!(
-        "[Desktop Entry]\nType=Application\nName=Claude Sessions\nComment=See, close and resume Claude Code sessions\nExec=\"{}\" ui\nIcon={}\nTerminal=false\nCategories=Development;\n",
+        "[Desktop Entry]\nType=Application\nName=Paddock\nComment=Every Claude Code and Codex session on your machine, in one place\nExec=\"{}\" ui\nIcon={}\nTerminal=false\nCategories=Development;\n",
         path_str(exe),
         path_str(&icon)
     );
     fs::write(&entry, text)?;
     fs::set_permissions(&entry, fs::Permissions::from_mode(0o755))?;
     Ok(entry)
+}
+
+/// The app shortcut made before the rename, if there is one.
+#[cfg(target_os = "macos")]
+pub fn old_shortcut() -> Option<PathBuf> {
+    let app = home().join("Applications").join("Claude Sessions.app");
+    fs::read_to_string(app.join("Contents").join("Info.plist")).is_ok_and(|plist| plist.contains("dev.cc-sessions.launcher")).then_some(app)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn old_shortcut() -> Option<PathBuf> {
+    let entry = home().join(".local").join("share").join("applications").join(format!("{OLD_NAME}.desktop"));
+    entry.is_file().then_some(entry)
 }
 
 /// Keep the token readable by its owner only.

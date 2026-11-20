@@ -9,12 +9,14 @@ use std::sync::Mutex;
 use serde_json::Value;
 
 use crate::os;
-use crate::util::{path_str, tilde, Error, Result};
+use crate::util::{path_str, setting, tilde, Error, Result};
 
 pub fn state_dir() -> PathBuf {
-    match std::env::var_os("CC_SESSIONS_HOME") {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => os::default_state_dir(),
+    match setting("HOME") {
+        Some(dir) => PathBuf::from(dir),
+        // Until an install from before the rename has been moved over (see migrate.rs).
+        None if !os::default_state_dir().exists() && os::old_state_dir().is_dir() => os::old_state_dir(),
+        None => os::default_state_dir(),
     }
 }
 
