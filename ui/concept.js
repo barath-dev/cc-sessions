@@ -865,7 +865,7 @@ function usageView() {
     h('div', { class: 'usage-row' }, hourMap(week), breakdown('By account', [...perAccount.entries()], (name) => accountColor(name))),
     h('div', { class: 'usage-row' }, breakdown('By model', [...perModel.entries()]), topSessions(chosen)),
     h('p', { class: 'usage-note' },
-      'Counted from each reply in the conversations Claude Code and Codex keep on this computer. Work done by sub-agents is in conversations of its own and is not counted here. ',
+      'Counted from each reply in the conversations Claude Code and Codex keep on this computer. Each reply counts once, however many lines it is written over, and a Claude Code sub-agent\'s replies count with the session that started it. ',
       'Claude Code deletes conversations after their account\'s cleanupPeriodDays (30 days unless changed), so older days are empty. Codex keeps them until they are deleted.'));
 }
 
