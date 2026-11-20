@@ -938,10 +938,11 @@ function renderSessions() {
             : h('span', { class: 'count' }, String(entries.length))),
         entries.map((e) => entryRow(e, folderOf(e), hits.get(e.key))));
     }),
-    (hiddenEmpty > 0 || shownEmpty > 0) && h('p', { class: 'list-more' },
+    // replaceChildren writes out a false as text, so nothing is an empty string here.
+    hiddenEmpty > 0 || shownEmpty > 0 ? h('p', { class: 'list-more' },
       h('button', { type: 'button', class: 'btn-link', onclick: () => { state.showEmpty = !state.showEmpty; render(); } },
         icon('eye'), state.showEmpty ? 'Hide empty conversations' : `Show ${plural(hiddenEmpty, 'empty conversation')}`),
-      h('span', { class: 'quiet' }, ' Opened and never used: no prompts.')),
+      h('span', { class: 'quiet' }, ' Opened and never used: no prompts.')) : '',
     h('p', { class: 'quiet list-note' }, reading ? 'Reading saved conversations…'
       : (activeAccounts().some((a) => a.tool === 'claude') ? `Claude Code itself deletes conversations after ${span} days without activity ` +
         '(its cleanupPeriodDays setting, shown per account under Accounts). ' : '') +

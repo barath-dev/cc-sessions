@@ -308,13 +308,15 @@ from `ui-token` on every API call, rejects requests whose `Host` is not
 - Claude Code has no "closed" state for interactive sessions (they vanish once their
   process ends) and leaves a finished background session as `done` after `claude stop`.
   `closed.json` is what keeps both listed as closed.
-- History is read from `<account>/projects/<folder>/<session>.jsonl`, top level only,
-  read-only. Artifacts are the links Claude Code records there when a conversation
-  publishes or opens one.
+- History is read from `<account>/projects/<folder>/<session>.jsonl`, read-only.
+  Artifacts are the links Claude Code records there when a conversation publishes or
+  opens one. Sub-agents' conversations, under `<folder>/<session>/subagents/`, are not
+  listed as sessions of their own.
 - Token counts come from the usage Claude Code records on each reply in those files. A
-  reply written over several lines is counted once. Sub-agents keep conversations of their
-  own, which are not counted, and days older than an account's `cleanupPeriodDays` are
-  empty because Claude Code has deleted them.
+  reply written over several lines is counted once (Claude Code's own `/stats` counts it
+  once per line, so its totals come out higher). A sub-agent's replies count with the
+  session that started it. Days older than an account's `cleanupPeriodDays` are empty
+  because Claude Code has deleted them.
 
 ### Codex
 
