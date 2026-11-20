@@ -16,9 +16,10 @@ use crate::os;
 use crate::proc;
 use crate::server::VERSION;
 use crate::store::{self, state_dir, state_file};
-use crate::util::{err, now_ms, Error, Result};
+use crate::util::{err, now_ms, setting, Error, Result, NAME, OLD_NAME};
 
-const REPO: &str = "barath-dev/cc-sessions";
+/// Renamed from barath-dev/cc-sessions, which GitHub sends on here.
+const REPO: &str = "barath-dev/paddock";
 /// How long a check's answer is trusted before asking again.
 const CHECK_EVERY_MS: i64 = 24 * 60 * 60 * 1000;
 
@@ -29,10 +30,10 @@ pub struct Release {
     pub notes: String,
 }
 
-/// Where releases come from. CC_SESSIONS_UPDATE_BASE points it somewhere else, for the
+/// Where releases come from. PADDOCK_UPDATE_BASE points it somewhere else, for the
 /// tests and for trying an update against a local copy of a release.
 fn base() -> Option<String> {
-    std::env::var("CC_SESSIONS_UPDATE_BASE").ok().filter(|b| !b.is_empty()).map(|b| b.trim_end_matches('/').to_string())
+    setting("UPDATE_BASE").map(|b| b.to_string_lossy().trim_end_matches('/').to_string())
 }
 
 fn latest_url() -> String {
@@ -69,7 +70,7 @@ pub fn asset_name() -> String {
         "aarch64" => "arm64",
         other => other,
     };
-    format!("cc-sessions-{}-{arch}{}", os::OS_NAME, if os::IS_WINDOWS { ".exe" } else { "" })
+    format!("{NAME}-{}-{arch}{}", os::OS_NAME, if os::IS_WINDOWS { ".exe" } else { "" })
 }
 
 /// Whether this is the copy the installer put in place, the only one that updates itself.
@@ -168,7 +169,7 @@ pub fn check() -> Result<Option<Release>> {
 /// Download the release for this system, check it, and put it in place of the installed program.
 pub fn install(release: &Release) -> Result<()> {
     if !managed() {
-        return err("This copy of cc-sessions was not put in place by its installer, so it does not update itself. Run the install line to update it.");
+        return err("This copy of Paddock was not put in place by its installer, so it does not update itself. Run the install line to update it.");
     }
     let dir = work_dir()?;
     let asset = asset_name();
@@ -208,7 +209,8 @@ fn fetch_and_place(release: &Release, asset: &str, file: &Path, sums: &Path) -> 
         fs::set_permissions(file, fs::Permissions::from_mode(0o755))?;
     }
     let out = proc::run(Command::new(file).arg("--version"), Duration::from_secs(15))?;
-    if !out.stdout.trim_start().starts_with("cc-sessions") {
+    let line = out.stdout.trim_start();
+    if !line.starts_with(NAME) && !line.starts_with(OLD_NAME) {
         return err("The downloaded program did not start properly. Nothing was changed.");
     }
     os::replace_program(file, &os::installed_program())
@@ -333,7 +335,7 @@ mod tests {
     #[test]
     fn asset_names_match_the_release_files() {
         let name = asset_name();
-        assert!(name.starts_with(&format!("cc-sessions-{}-", os::OS_NAME)), "{name}");
+        assert!(name.starts_with(&format!("paddock-{}-", os::OS_NAME)), "{name}");
         assert!(name.ends_with("-arm64") || name.ends_with("-x86_64") || name.ends_with("-arm64.exe") || name.ends_with("-x86_64.exe"), "{name}");
     }
 }

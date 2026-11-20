@@ -216,7 +216,7 @@ async function api(path, body) {
     });
   } catch {
     if (state.offline !== 'disconnected') setOffline('stopped');
-    throw new Error('Claude Sessions is not running.');
+    throw new Error('Paddock is not running.');
   }
   if (response.status === 401) {
     setOffline('token');
@@ -230,9 +230,9 @@ async function api(path, body) {
 // ---------------------------------------------------------------- connection
 
 const OFFLINE_TEXT = {
-  stopped: ['Disconnected', 'The Claude Sessions server is not running. Start it again from any terminal:',
+  stopped: ['Disconnected', 'The Paddock server is not running. Start it again from any terminal:',
     'It stops by itself after a while with no page open. This page reconnects once the server is back.'],
-  disconnected: ['Disconnected', 'The Claude Sessions server has stopped. Start it again from any terminal:',
+  disconnected: ['Disconnected', 'The Paddock server has stopped. Start it again from any terminal:',
     'Your Claude Code and Codex sessions, accounts and data were not touched and keep running.'],
   token: ['Open this page from the terminal', 'This browser does not have the access key for the server. Run:',
     'That opens the page with the key, and it is remembered after that.'],
@@ -246,7 +246,7 @@ function setOffline(reason) {
   $('#offline-text').textContent = text;
   $('#offline-note').textContent = note;
   // Setup lets the command be renamed; show the one this machine uses.
-  $('#offline-command').textContent = store('cc-command') || 'cc-sessions';
+  $('#offline-command').textContent = store('cc-command') || 'paddock';
   $('#offline').hidden = false;
   document.body.classList.add('is-offline');
   if ($('#dialog').open) $('#dialog').close();
@@ -270,8 +270,8 @@ function setConnState(value, label) {
 
 async function disconnect() {
   const ok = await showDialog({
-    title: 'Disconnect Claude Sessions?',
-    body: [h('p', {}, 'This stops the Claude Sessions server and this page stops updating.'),
+    title: 'Disconnect Paddock?',
+    body: [h('p', {}, 'This stops the Paddock server and this page stops updating.'),
       h('p', {}, 'Your Claude Code and Codex sessions keep running. Nothing is closed or deleted.')],
     confirmLabel: 'Disconnect',
     onConfirm: () => api('/api/shutdown', {}),
@@ -457,7 +457,7 @@ function mount() {
 function render(force) {
   if (!state.data) return;
   const waiting = state.data.sessions.filter(needsYou).length;
-  document.title = `${waiting ? `(${waiting}) ` : ''}Claude Sessions`;
+  document.title = `${waiting ? `(${waiting}) ` : ''}Paddock`;
   if (state.renaming && !force) return;
   if (!$('#list')) return mount();
   const mark = focusMark();
@@ -946,7 +946,7 @@ function renderSessions() {
       : (activeAccounts().some((a) => a.tool === 'claude') ? `Claude Code itself deletes conversations after ${span} days without activity ` +
         '(its cleanupPeriodDays setting, shown per account under Accounts). ' : '') +
         (activeAccounts().some((a) => a.tool === 'codex') ? 'Codex keeps its conversations until they are deleted. ' : '') +
-        'Claude Sessions never deletes any.'));
+        'Paddock never deletes any.'));
 }
 
 function isEmpty(e) {
@@ -1359,7 +1359,7 @@ function noticeChanges(before, after) {
   } else if (alertsOn()) {
     const note = one
       ? new Notification(what, { body: `${one.cwd} · ${one.account}`, tag: one.key })
-      : new Notification(`${plural(fresh.length, 'session')} need you`, { body: what, tag: 'cc-sessions-batch' });
+      : new Notification(`${plural(fresh.length, 'session')} need you`, { body: what, tag: 'paddock-batch' });
     note.onclick = () => {
       window.focus();
       note.close();

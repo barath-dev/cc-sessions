@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-const EXE: &str = env!("CARGO_BIN_EXE_cc-sessions");
+const EXE: &str = env!("CARGO_BIN_EXE_paddock");
 const FAKE_CLAUDE: &str = env!("CARGO_BIN_EXE_fake-claude");
 
 fn now_ms() -> i64 {
@@ -102,7 +102,7 @@ struct Machine {
 
 impl Machine {
     fn new(name: &str, port: u16) -> Machine {
-        let root = std::env::temp_dir().join(format!("cc-sessions-e2e-{name}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("paddock-e2e-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let home = root.join("home");
         let bin = root.join("bin");
@@ -147,12 +147,12 @@ impl Machine {
             .env("APPDATA", self.root.join("appdata"))
             .env("LOCALAPPDATA", self.root.join("localappdata"))
             .env("SHELL", "/bin/zsh")
-            .env("CC_SESSIONS_HOME", &self.state)
-            .env("CC_SESSIONS_PORT", self.port.to_string())
-            .env("CC_SESSIONS_SKIP_PATH", "1")
+            .env("PADDOCK_HOME", &self.state)
+            .env("PADDOCK_PORT", self.port.to_string())
+            .env("PADDOCK_SKIP_PATH", "1")
             .env("FAKE_CLAUDE_LOG", self.root.join("claude-calls.log"))
             // Never ask GitHub from a test: a port nothing listens on fails at once.
-            .env("CC_SESSIONS_UPDATE_BASE", "http://127.0.0.1:9")
+            .env("PADDOCK_UPDATE_BASE", "http://127.0.0.1:9")
             .current_dir(&self.home);
         cmd
     }
@@ -160,9 +160,9 @@ impl Machine {
     /// Where the installer would put the program in this home.
     fn installed(&self) -> PathBuf {
         if cfg!(windows) {
-            self.root.join("localappdata").join("cc-sessions").join("cc-sessions.exe")
+            self.root.join("localappdata").join("paddock").join("paddock.exe")
         } else {
-            self.home.join(".local").join("share").join("cc-sessions").join("cc-sessions")
+            self.home.join(".local").join("share").join("paddock").join("paddock")
         }
     }
 
@@ -421,7 +421,7 @@ fn account_lifecycle_keeps_folders() {
     let demo = registry["accounts"].as_array().unwrap().iter().find(|a| a["name"] == "demo").unwrap();
     assert_eq!(demo["alias"], "claude-demo");
     if cfg!(windows) {
-        let bin = m.root.join("localappdata").join("cc-sessions").join("bin");
+        let bin = m.root.join("localappdata").join("paddock").join("bin");
         assert!(bin.join("claude-demo.cmd").exists() && !bin.join("claude-scratch.cmd").exists());
     } else {
         let aliases = fs::read_to_string(m.state.join("aliases.sh")).unwrap();
@@ -849,7 +849,7 @@ fn release_server(port: u16, files: Files) -> String {
 fn asset_name() -> String {
     let os = if cfg!(target_os = "macos") { "macos" } else if cfg!(windows) { "windows" } else { "linux" };
     let arch = if std::env::consts::ARCH == "aarch64" { "arm64" } else { std::env::consts::ARCH };
-    format!("cc-sessions-{os}-{arch}{}", if cfg!(windows) { ".exe" } else { "" })
+    format!("paddock-{os}-{arch}{}", if cfg!(windows) { ".exe" } else { "" })
 }
 
 /// SHA-256 with the system's own tool, to write the checksum list the way a release does.
@@ -882,12 +882,12 @@ fn update_installs_a_checked_release() {
     fs::create_dir_all(installed.parent().unwrap()).unwrap();
     fs::copy(EXE, &installed).unwrap();
     m.seal();
-    // The "new version" is the fake claude, told to say it is cc-sessions 99.0.0.
+    // The "new version" is the fake claude, told to say it is paddock 99.0.0.
     let files: Files = Arc::default();
     let base = release_server(47816, files.clone());
     publish(&files, "v99.0.0", Path::new(FAKE_CLAUDE));
     let update = |exe: &Path, args: &[&str]| {
-        m.command_at(exe, args).env("CC_SESSIONS_UPDATE_BASE", &base).env("FAKE_VERSION_LINE", "cc-sessions 99.0.0").stdin(Stdio::null()).output().unwrap()
+        m.command_at(exe, args).env("PADDOCK_UPDATE_BASE", &base).env("FAKE_VERSION_LINE", "paddock 99.0.0").stdin(Stdio::null()).output().unwrap()
     };
     let original = fs::read(EXE).unwrap();
 
@@ -939,7 +939,7 @@ fn server_restarts_on_an_update() {
     let base = release_server(47818, files.clone());
     publish(&files, "v99.0.0", Path::new(EXE));
 
-    let started = m.command_at(&installed, &["--no-open"]).env("CC_SESSIONS_UPDATE_BASE", &base).stdin(Stdio::null()).output().unwrap();
+    let started = m.command_at(&installed, &["--no-open"]).env("PADDOCK_UPDATE_BASE", &base).stdin(Stdio::null()).output().unwrap();
     assert!(started.status.success(), "{}", text(&started));
     let token = m.token();
     let before = server_pid(m.port, &token).expect("the server answers");
@@ -1023,7 +1023,7 @@ fn server_guards_and_disconnect() {
 fn server_stops_itself_when_no_page_is_open() {
     let mut m = Machine::new("idle", 47809);
     m.seal();
-    let started = m.command(&["--no-open"]).env("CC_SESSIONS_IDLE_SECONDS", "2").stdin(Stdio::null()).output().unwrap();
+    let started = m.command(&["--no-open"]).env("PADDOCK_IDLE_SECONDS", "2").stdin(Stdio::null()).output().unwrap();
     assert!(started.status.success(), "{}", text(&started));
     assert!(m.state.join("ui.pid").exists());
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -1052,7 +1052,7 @@ fn setup_can_be_repeated() {
     assert_eq!(names, ["default", "work"]);
 
     if cfg!(windows) {
-        assert!(m.root.join("localappdata").join("cc-sessions").join("bin").join("cs-test.cmd").exists());
+        assert!(m.root.join("localappdata").join("paddock").join("bin").join("cs-test.cmd").exists());
     } else {
         // An alias the person already had for the folder keeps its name.
         assert_eq!(registry["accounts"][1]["alias"], "kt");
@@ -1060,7 +1060,7 @@ fn setup_can_be_repeated() {
         let rc = fs::read_to_string(m.home.join(".zshrc")).unwrap();
         assert!(rc.starts_with("export KEEP=1\n"), "{rc}");
         assert_eq!(rc.matches("aliases.sh").count(), 2, "one line, naming the file twice: {rc}");
-        assert!(m.home.join(".zshrc.cc-sessions-backup").exists());
+        assert!(m.home.join(".zshrc.paddock-backup").exists());
 
         // A second run changes nothing and renames the command cleanly.
         let second = m.run(&["setup", "--yes", "--command", "cs-two"]);
@@ -1071,4 +1071,84 @@ fn setup_can_be_repeated() {
         let config: Value = serde_json::from_str(&fs::read_to_string(m.state.join("config.json")).unwrap()).unwrap();
         assert_eq!(config["port"], 4999, "answers that were not given again are kept");
     }
+}
+
+#[test]
+fn an_install_from_before_the_rename_moves_over() {
+    let m = Machine::new("old-name", 47830);
+    // As cc-sessions 2.7 left it: the program and its command, its settings, the
+    // app shortcut and fish's shortcut file.
+    let (old_exe, old_state) = if cfg!(windows) {
+        (m.root.join("localappdata").join("cc-sessions").join("cc-sessions.exe"), m.root.join("appdata").join("cc-sessions"))
+    } else {
+        (m.home.join(".local").join("share").join("cc-sessions").join("cc-sessions"), m.home.join(".config").join("cc-sessions"))
+    };
+    fs::create_dir_all(old_exe.parent().unwrap()).unwrap();
+    fs::copy(EXE, &old_exe).unwrap();
+    let bin = m.home.join(".local").join("bin");
+    if cfg!(windows) {
+        let bin = old_exe.parent().unwrap().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("cc-sessions.cmd"), format!("@echo off\r\nrem cc-sessions command. Do not edit.\r\n\"{}\" %*\r\n", old_exe.display())).unwrap();
+    } else {
+        fs::create_dir_all(&bin).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&old_exe, bin.join("cc-sessions")).unwrap();
+    }
+    fs::create_dir_all(&old_state).unwrap();
+    let registry = json!({ "version": 1, "accounts": [{ "name": "default", "dir": m.home.join(".claude").to_string_lossy() }] });
+    fs::write(old_state.join("accounts.json"), registry.to_string()).unwrap();
+    fs::write(old_state.join("config.json"), json!({ "command": "cc-sessions", "port": 47830, "shortcut": true, "manageAliases": true }).to_string()).unwrap();
+    let app = m.home.join("Applications").join("Claude Sessions.app");
+    let desktop = m.home.join(".local").join("share").join("applications").join("cc-sessions.desktop");
+    if cfg!(target_os = "macos") {
+        fs::create_dir_all(app.join("Contents")).unwrap();
+        fs::write(app.join("Contents").join("Info.plist"), "<string>dev.cc-sessions.launcher</string>").unwrap();
+    } else if cfg!(unix) {
+        fs::create_dir_all(desktop.parent().unwrap()).unwrap();
+        fs::write(&desktop, "[Desktop Entry]\nName=Claude Sessions\n").unwrap();
+    }
+    let fish = m.home.join(".config").join("fish").join("conf.d");
+    if cfg!(unix) {
+        fs::create_dir_all(&fish).unwrap();
+        fs::write(fish.join("cc-sessions.fish"), "# Generated by cc-sessions from its account registry.\n").unwrap();
+    }
+
+    // The first run of the new program, auto-updated in the old place, with no PADDOCK_HOME.
+    let run = |args: &[&str]| m.command_at(&old_exe, args).env_remove("PADDOCK_HOME").stdin(Stdio::null()).output().unwrap();
+    let listed = run(&["account", "list"]);
+    assert!(listed.status.success() && text(&listed).contains("default"), "{}", text(&listed));
+
+    let new_state = old_state.with_file_name("paddock");
+    assert!(new_state.join("accounts.json").exists(), "the settings moved");
+    let config: Value = serde_json::from_str(&fs::read_to_string(new_state.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["command"], "paddock");
+    assert_eq!(config["port"], 47830, "the rest of the settings are kept");
+    if cfg!(windows) {
+        let bin = old_exe.parent().unwrap().join("bin");
+        assert!(bin.join("paddock.cmd").exists() && bin.join("cc-sessions.cmd").exists(), "both commands, in the folder already on PATH");
+    } else {
+        assert!(fs::symlink_metadata(&old_state).unwrap().file_type().is_symlink(), "the old path still leads to the settings");
+        assert_eq!(fs::read_link(bin.join("paddock")).unwrap(), old_exe, "paddock starts the same program");
+        assert_eq!(fs::read_link(bin.join("cc-sessions")).unwrap(), old_exe, "and cc-sessions still does");
+        assert!(!fish.join("cc-sessions.fish").exists() && fish.join("paddock.fish").exists());
+    }
+    if cfg!(target_os = "macos") {
+        assert!(!app.exists() && m.home.join("Applications").join("Paddock.app").exists());
+    } else if cfg!(unix) {
+        assert!(!desktop.exists() && desktop.with_file_name("paddock.desktop").exists());
+    }
+
+    // A 2.7 updater checks the download it saved as cc-sessions-<system> by its version line.
+    let saved = old_exe.with_file_name(if cfg!(windows) { "cc-sessions-windows-x86_64.exe" } else { "cc-sessions-macos-arm64" });
+    fs::copy(EXE, &saved).unwrap();
+    let version = Command::new(&saved).arg("--version").output().unwrap();
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("cc-sessions 2."), "{}", text(&version));
+    let version = m.run(&["--version"]);
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("paddock 2."), "{}", text(&version));
+
+    // Once moved, nothing is moved again.
+    let again = run(&["account", "list"]);
+    assert!(again.status.success() && text(&again).contains("default"), "{}", text(&again));
+    assert!(new_state.join("accounts.json").exists());
 }

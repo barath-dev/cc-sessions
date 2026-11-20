@@ -1,5 +1,5 @@
 name: Suggest a feature
-description: An idea that would make cc-sessions more useful.
+description: An idea that would make Paddock more useful.
 labels: [enhancement]
 body:
   - type: textarea

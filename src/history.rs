@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn indexes_a_transcript() {
-        let dir = std::env::temp_dir().join(format!("cc-sessions-history-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("paddock-history-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("0f0f0f0f-aaaa-bbbb-cccc-121212121212.jsonl");
         let lines = [

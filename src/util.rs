@@ -114,6 +114,16 @@ pub fn log_stamp() -> String {
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}:{s:02}Z")
 }
 
+/// The tool's name, as the command and in messages. It was cc-sessions before 2.8.
+pub const NAME: &str = "paddock";
+pub const OLD_NAME: &str = "cc-sessions";
+
+/// One of the tool's own environment settings, `PADDOCK_<key>`, or its name
+/// from before the rename, `CC_SESSIONS_<key>`. Empty counts as unset.
+pub fn setting(key: &str) -> Option<std::ffi::OsString> {
+    [format!("PADDOCK_{key}"), format!("CC_SESSIONS_{key}")].iter().find_map(|var| std::env::var_os(var).filter(|v| !v.is_empty()))
+}
+
 pub fn home() -> PathBuf {
     let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     PathBuf::from(std::env::var_os(var).unwrap_or_default())

@@ -1,28 +1,29 @@
 #!/bin/sh
-# cc-sessions installer for macOS and Linux.
+# Paddock installer for macOS and Linux.
 #
-#   curl -fsSL https://raw.githubusercontent.com/barath-dev/cc-sessions/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/barath-dev/paddock/main/install.sh | sh
 #
 # Downloads the one program for this system, checks it against the release's
-# SHA-256 list, puts it in ~/.local/share/cc-sessions, and runs its setup.
-# Running it again later updates the program and keeps all settings.
+# SHA-256 list, puts it in ~/.local/share/paddock, and runs its setup.
+# Running it again later updates the program and keeps all settings. An install
+# from before the rename (cc-sessions) is updated where it is.
 # To pass setup options:  curl ... | sh -s -- --yes --command cs
 set -eu
 
-REPO="barath-dev/cc-sessions"
-BASE="${CC_SESSIONS_INSTALL_BASE:-https://github.com/$REPO/releases/latest/download}"
+REPO="barath-dev/paddock"
+BASE="${PADDOCK_INSTALL_BASE:-${CC_SESSIONS_INSTALL_BASE:-https://github.com/$REPO/releases/latest/download}}"
 
 case "$(uname -s)" in
   Darwin) os=macos ;;
   Linux) os=linux ;;
-  *) echo "cc-sessions: this installer is for macOS and Linux. On Windows use install.ps1." >&2; exit 1 ;;
+  *) echo "paddock: this installer is for macOS and Linux. On Windows use install.ps1." >&2; exit 1 ;;
 esac
 case "$(uname -m)" in
   arm64 | aarch64) arch=arm64 ;;
   x86_64 | amd64) arch=x86_64 ;;
-  *) echo "cc-sessions: no build for processor type $(uname -m)." >&2; exit 1 ;;
+  *) echo "paddock: no build for processor type $(uname -m)." >&2; exit 1 ;;
 esac
-asset="cc-sessions-$os-$arch"
+asset="paddock-$os-$arch"
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then
@@ -30,7 +31,7 @@ fetch() {
   elif command -v wget >/dev/null 2>&1; then
     wget -qO "$2" "$1"
   else
-    echo "cc-sessions: curl or wget is needed to download." >&2
+    echo "paddock: curl or wget is needed to download." >&2
     exit 1
   fi
 }
@@ -49,26 +50,32 @@ else
   actual=$(shasum -a 256 "$tmp/$asset" | awk '{ print $1 }')
 fi
 if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-  echo "cc-sessions: the download does not match the release checksum. Nothing was installed." >&2
+  echo "paddock: the download does not match the release checksum. Nothing was installed." >&2
   exit 1
 fi
 
-dir="$HOME/.local/share/cc-sessions"
+dir="$HOME/.local/share/paddock"
+program="$dir/paddock"
+if [ ! -e "$program" ] && [ -e "$HOME/.local/share/cc-sessions/cc-sessions" ]; then
+  # Installed before the rename: update it in place, where its commands point.
+  dir="$HOME/.local/share/cc-sessions"
+  program="$dir/cc-sessions"
+fi
 mkdir -p "$dir"
 chmod +x "$tmp/$asset"
-mv "$tmp/$asset" "$dir/cc-sessions"
-echo "Installed $("$dir/cc-sessions" --version) in $dir"
+mv "$tmp/$asset" "$program"
+echo "Installed $("$program" --version) in $dir"
 echo
 
 # Ask the setup questions on the terminal even when this script was piped in.
 if [ -t 0 ]; then
-  "$dir/cc-sessions" setup "$@"
+  "$program" setup "$@"
 elif (exec </dev/tty) 2>/dev/null; then
-  "$dir/cc-sessions" setup "$@" </dev/tty
+  "$program" setup "$@" </dev/tty
 else
-  "$dir/cc-sessions" setup --yes "$@"
+  "$program" setup --yes "$@"
 fi
 
 echo
-echo "If Claude Sessions was already running, restart it to use the new version."
+echo "If Paddock was already running, restart it to use the new version."
 echo "From now on it keeps itself up to date (Settings > General > Updates to change that)."

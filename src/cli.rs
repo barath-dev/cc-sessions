@@ -19,35 +19,37 @@ use crate::setup;
 use crate::titles;
 use crate::tools::{self, Tool};
 use crate::update;
-use crate::util::{age, err, ms_to_date, path_str, tilde, Error, Result};
+use crate::util::{age, err, ms_to_date, path_str, tilde, Error, Result, NAME, OLD_NAME};
 
 const HELP: &str = "\
-cc-sessions: see, close and resume Claude Code and Codex sessions across every account.
+Paddock: every Claude Code and Codex session on your machine, in one place.
+See, close and resume them across every account.
 
-  cc-sessions                      start the web app if needed and open it
-  cc-sessions stop                 stop the web app (same as Disconnect in the page)
-  cc-sessions setup                change the command name, port, shortcuts and updates
-  cc-sessions update [--check]     install the latest version now (--check: only look)
-  cc-sessions report               report a problem: opens a filled-in GitHub issue
+  paddock                          start the web app if needed and open it
+  paddock stop                 stop the web app (same as Disconnect in the page)
+  paddock setup                change the command name, port, shortcuts and updates
+  paddock update [--check]     install the latest version now (--check: only look)
+  paddock report               report a problem: opens a filled-in GitHub issue
 
-  cc-sessions list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
-  cc-sessions history [--folder PATH] [--account NAME] [--by-date] [--json]
-  cc-sessions close <id>... | --folder PATH | --account NAME  [--yes]
-  cc-sessions rename <id> NEW NAME | --reset
+  paddock list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
+  paddock history [--folder PATH] [--account NAME] [--by-date] [--json]
+  paddock close <id>... | --folder PATH | --account NAME  [--yes]
+  paddock rename <id> NEW NAME | --reset
 
-  cc-sessions account list [--removed]
-  cc-sessions account add NAME [--tool claude|codex] [--alias A] [--dir PATH] [--no-login]
-  cc-sessions account rename NAME NEW-NAME [--alias A]
-  cc-sessions account login NAME
-  cc-sessions account remove NAME [--yes]
-  cc-sessions account restore NAME [--alias A]
+  paddock account list [--removed]
+  paddock account add NAME [--tool claude|codex] [--alias A] [--dir PATH] [--no-login]
+  paddock account rename NAME NEW-NAME [--alias A]
+  paddock account login NAME
+  paddock account remove NAME [--yes]
+  paddock account restore NAME [--alias A]
 
 An account is one Claude Code or Codex folder (~/.claude, ~/.codex-work, ...).
 Session ids are shown as account:id. Closing stops a session and keeps its
-conversation. A new name is kept by cc-sessions; the tool keeps its own
+conversation. A new name is kept by Paddock; the tool keeps its own
 title. Nothing under an account folder is ever deleted or changed.
 
 Options: --no-open (start without opening the browser), --version, --help
+Paddock was called cc-sessions before 2.8; that command still works.
 ";
 
 /// Flags that take a value; every other `--flag` is a switch.
@@ -86,7 +88,7 @@ impl Args {
             } else if SWITCHES.contains(&name) && inline.is_none() {
                 args.switches.push(name.to_string());
             } else {
-                return err(format!("Unknown option --{name}. Try: cc-sessions --help"));
+                return err(format!("Unknown option --{name}. Try: paddock --help"));
             }
         }
         Ok(args)
@@ -101,7 +103,7 @@ impl Args {
     }
 
     fn word(&self, index: usize, what: &str) -> Result<&str> {
-        self.words.get(index).map(String::as_str).ok_or_else(|| Error(format!("Missing {what}. Try: cc-sessions --help")))
+        self.words.get(index).map(String::as_str).ok_or_else(|| Error(format!("Missing {what}. Try: paddock --help")))
     }
 }
 
@@ -117,10 +119,18 @@ pub fn main() -> i32 {
     let quiet = matches!(args.words.first().map(String::as_str), Some("serve" | "update" | "setup" | "report")) || args.has("json");
     if !quiet && !accounts::load_config().auto_update {
         if let Some(tag) = update::known_newer() {
-            eprintln!("\ncc-sessions {} is out. Install it with: {} update", tag.trim_start_matches('v'), me());
+            eprintln!("\nPaddock {} is out. Install it with: {} update", tag.trim_start_matches('v'), me());
         }
     }
     code
+}
+
+/// The name for the version line and errors. A 2.7 updater runs the download it saved
+/// as `cc-sessions-<system>` and takes it only if its version line starts so.
+fn invoked_as() -> &'static str {
+    let called = std::env::args_os().next().map(std::path::PathBuf::from);
+    let called = called.as_deref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if called.starts_with(&format!("{OLD_NAME}-")) { OLD_NAME } else { NAME }
 }
 
 /// What the person types to run this tool; setup lets them rename it.
@@ -129,19 +139,20 @@ fn me() -> String {
 }
 
 fn fail(e: &Error) -> i32 {
-    eprintln!("cc-sessions: {e}");
+    eprintln!("{}: {e}", invoked_as());
     1
 }
 
 fn run(args: &Args) -> Result<i32> {
     if args.has("version") {
-        println!("cc-sessions {VERSION}");
+        println!("{} {VERSION}", invoked_as());
         return Ok(0);
     }
     if args.has("help") {
         print!("{HELP}");
         return Ok(0);
     }
+    crate::migrate::run();
     match args.words.first().map(String::as_str) {
         None | Some("ui") => cmd_open(args),
         Some("stop") => cmd_stop(),
@@ -162,7 +173,7 @@ fn run(args: &Args) -> Result<i32> {
             Some("restore") => account_restore(args),
             _ => err("Say what to do with accounts: list, add, rename, login, remove or restore."),
         },
-        Some(other) => err(format!("Unknown command '{other}'. Try: cc-sessions --help")),
+        Some(other) => err(format!("Unknown command '{other}'. Try: paddock --help")),
     }
 }
 
@@ -244,7 +255,9 @@ fn http(method: &str, path: &str, body: Option<&str>, timeout: Duration) -> Opti
 fn ping() -> Option<Value> {
     let (status, body) = http("GET", "/api/ping", None, Duration::from_secs(2))?;
     let data: Value = serde_json::from_str(&body).ok()?;
-    (status == 200 && data.get("app").and_then(Value::as_str) == Some("cc-sessions")).then_some(data)
+    // The server answers to its old name (see server.rs); a later one may answer to the new.
+    let app = data.get("app").and_then(Value::as_str);
+    (status == 200 && (app == Some(NAME) || app == Some(OLD_NAME))).then_some(data)
 }
 
 fn port_busy() -> bool {
@@ -256,14 +269,14 @@ fn port_busy() -> bool {
 fn cmd_open(args: &Args) -> Result<i32> {
     let port = server::port();
     if ping().is_some() {
-        println!("Claude Sessions is already running.");
+        println!("Paddock is already running.");
     } else {
         if port_busy() {
             return err(format!("Port {port} is in use by another program. Stop it, or pick another port with: {} setup", me()));
         }
         server::start_detached(&std::env::current_exe()?)?;
         wait_for_server()?;
-        println!("Claude Sessions started.");
+        println!("Paddock started.");
     }
     let base = format!("http://{HOST}:{port}");
     if !args.has("no-open") {
@@ -290,10 +303,10 @@ fn wait_for_server() -> Result<()> {
 fn cmd_update(args: &Args) -> Result<i32> {
     println!("Looking for a new version...");
     let Some(release) = update::check()? else {
-        println!("cc-sessions {VERSION} is the latest version.");
+        println!("Paddock {VERSION} is the latest version.");
         return Ok(0);
     };
-    println!("cc-sessions {} is out (this is {VERSION}).", release.tag.trim_start_matches('v'));
+    println!("Paddock {} is out (this is {VERSION}).", release.tag.trim_start_matches('v'));
     if !release.url.is_empty() {
         println!("  What's new: {}", release.url);
     }
@@ -309,7 +322,7 @@ fn cmd_update(args: &Args) -> Result<i32> {
         cmd_stop()?;
         server::start_detached(&os::installed_program())?;
         wait_for_server()?;
-        println!("Claude Sessions restarted on the new version.");
+        println!("Paddock restarted on the new version.");
     }
     Ok(0)
 }
@@ -339,7 +352,7 @@ fn cmd_report() -> Result<i32> {
 
 fn cmd_stop() -> Result<i32> {
     let Some(info) = ping() else {
-        println!("Claude Sessions is not running.");
+        println!("Paddock is not running.");
         return Ok(0);
     };
     let pid = info.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
@@ -352,7 +365,7 @@ fn cmd_stop() -> Result<i32> {
     if os::pid_alive(pid) {
         return err(format!("The server (pid {pid}) has not stopped yet."));
     }
-    println!("Claude Sessions stopped. Your Claude Code and Codex sessions are untouched.");
+    println!("Paddock stopped. Your Claude Code and Codex sessions are untouched.");
     Ok(0)
 }
 
@@ -708,7 +721,7 @@ fn account_remove(args: &Args) -> Result<i32> {
             println!("  {}", describe(sess));
         }
     }
-    if !args.has("yes") && !confirm(&format!("Remove account '{}' from Claude Sessions? Nothing on disk is deleted.", acc.name)) {
+    if !args.has("yes") && !confirm(&format!("Remove account '{}' from Paddock? Nothing on disk is deleted.", acc.name)) {
         return Ok(1);
     }
     accounts::remove_account(&acc.name)?;

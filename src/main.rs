@@ -1,5 +1,6 @@
-//! cc-sessions: see, close and resume Claude Code and Codex sessions across every
-//! account on one machine, from a local web page or the command line.
+//! Paddock: see, close and resume Claude Code and Codex sessions across every
+//! account on one machine, from a local web page or the command line. It was
+//! called cc-sessions before 2.8 (see migrate.rs).
 //!
 //! Safety rule for the whole program: nothing here deletes or moves anything
 //! under an account's config folder. Removing an account sets a flag in the
@@ -13,6 +14,7 @@ mod codex;
 mod editors;
 mod history;
 mod loops;
+mod migrate;
 mod os;
 mod pins;
 mod proc;

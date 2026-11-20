@@ -908,7 +908,7 @@ fn converse(input: &mut impl Write, output: &mut impl Read, requests: &[Value]) 
     let id = |m: &Value| m.get("id").and_then(Value::as_u64);
     // Background terminals are among the "experimental" requests, offered only to clients that ask.
     let hello = json!({"id": 0, "method": "initialize", "params": {
-        "clientInfo": {"name": "cc-sessions", "version": env!("CARGO_PKG_VERSION")},
+        "clientInfo": {"name": "paddock", "version": env!("CARGO_PKG_VERSION")},
         "capabilities": {"experimentalApi": true},
     }});
     send_message(input, &hello)?;
@@ -1074,7 +1074,7 @@ mod tests {
     use serde_json::json;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("cc-sessions-codex-{name}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("paddock-codex-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir

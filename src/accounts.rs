@@ -77,7 +77,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { command: "cc-sessions".into(), port: 4777, shortcut: true, manage_aliases: true, idle_minutes: 30, auto_update: true }
+        Config { command: crate::util::NAME.into(), port: 4777, shortcut: true, manage_aliases: true, idle_minutes: 30, auto_update: true }
     }
 }
 

@@ -372,7 +372,7 @@
     };
     paint();
     return h('div', { class: 'st-field' }, h('span', { class: 'st-field-label' }, 'Colour'), group,
-      h('span', { class: 'st-hint' }, 'Marks this account everywhere in Claude Sessions.'));
+      h('span', { class: 'st-hint' }, 'Marks this account everywhere in Paddock.'));
   }
 
   async function after(message) {
@@ -543,7 +543,7 @@
 
   // ------------------------------------------------------ updates and reports
 
-  const REPO_URL = 'https://github.com/barath-dev/cc-sessions';
+  const REPO_URL = 'https://github.com/barath-dev/paddock';
   let version = null;         // the server's, from /api/state
   let update = null;          // its update status, from /api/state
   const errors = [];          // the last few error messages shown, for a report
@@ -657,7 +657,7 @@
     const recent = error ? [scrub(error), ...errors.filter((e) => e !== scrub(error))] : [...errors];
     const include = h('input', { type: 'checkbox', checked: recent.length > 0 });
     const text = () => [
-      `cc-sessions: ${diag.version}`,
+      `Paddock: ${diag.version}`,
       `Latest release: ${diag.latest || 'unknown'}`,
       `System: ${diag.system || 'unknown'}`,
       `Claude Code: ${diag.claudeCode || 'unknown'}`,
@@ -709,7 +709,7 @@
   async function setAuto(on) {
     try {
       update = await api('/api/settings/auto-update', { on });
-      toast(on ? 'New versions will be installed automatically.' : 'Updates are now up to you: Settings › General, or cc-sessions update.');
+      toast(on ? 'New versions will be installed automatically.' : 'Updates are now up to you: Settings › General, or paddock update.');
     } catch (err) {
       toast(err.message, 'error');
     }
@@ -780,22 +780,22 @@
       feedbackGroup(),
       h('section', { class: 'st-group' },
         h('h4', {}, 'Disconnect'),
-        h('p', { class: 'st-hint' }, 'Stops Claude Sessions, the server behind this page. Your Claude Code and Codex sessions keep running, and nothing is closed or deleted.'),
+        h('p', { class: 'st-hint' }, 'Stops Paddock, the server behind this page. Your Claude Code and Codex sessions keep running, and nothing is closed or deleted.'),
         h('button', { type: 'button', class: 'st-btn st-btn-danger', 'data-fk': 'stop', onclick: stop }, icon('power'), 'Disconnect…')),
     ];
   }
 
   async function stop() {
     const ok = await ask({
-      title: 'Disconnect Claude Sessions?',
-      body: [h('p', {}, 'This stops the Claude Sessions server and this page stops updating. Your Claude Code and Codex sessions keep running.')],
+      title: 'Disconnect Paddock?',
+      body: [h('p', {}, 'This stops the Paddock server and this page stops updating. Your Claude Code and Codex sessions keep running.')],
       confirmLabel: 'Disconnect',
       danger: true,
       onConfirm: () => api('/api/shutdown', {}),
     });
     if (!ok) return;
     close();
-    const command = store('cc-command') || 'cc-sessions';
+    const command = store('cc-command') || 'paddock';
     toast(`Stopped. Run ${command} in a terminal to start it again.`);
     window.dispatchEvent(new CustomEvent('cc-stopped'));
   }

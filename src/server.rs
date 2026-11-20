@@ -30,7 +30,7 @@ use crate::sessions::{self, Session};
 use crate::store::{state_dir, state_file};
 use crate::titles;
 use crate::update;
-use crate::util::{err, expand_tilde, log_stamp, now_ms, tilde, Error, Result};
+use crate::util::{err, expand_tilde, log_stamp, now_ms, setting, tilde, Error, Result};
 
 pub const HOST: &str = "127.0.0.1";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -63,7 +63,7 @@ const UI: &[(&str, &str, &[u8])] = &[
 ];
 
 pub fn port() -> u16 {
-    std::env::var("CC_SESSIONS_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or_else(|| accounts::load_config().port)
+    setting("PORT").and_then(|p| p.to_str()?.parse().ok()).unwrap_or_else(|| accounts::load_config().port)
 }
 
 pub fn pid_file() -> PathBuf {
@@ -624,7 +624,7 @@ fn respond_json(request: Request, status: u16, value: &Value) {
 fn static_file(path: &str) -> Option<(&'static str, Vec<u8>)> {
     let (_, content_type, bytes) = UI.iter().find(|(route, ..)| *route == path)?;
     // For working on the page without rebuilding.
-    if let Some(dir) = std::env::var_os("CC_SESSIONS_UI_DIR") {
+    if let Some(dir) = setting("UI_DIR") {
         let name = match path {
             "/" => "index.html",
             "/finder" | "/concept" => "concept.html",
@@ -664,7 +664,9 @@ fn handle(app: &App, mut request: Request) {
 
     let result = if is_get {
         match path.as_str() {
-            "/api/ping" => Ok(json!({ "ok": true, "app": "cc-sessions", "version": VERSION, "pid": std::process::id() })),
+            // "cc-sessions" stays its name here: a 2.7 command that has just updated the
+            // program waits for a server that answers to it.
+            "/api/ping" => Ok(json!({ "ok": true, "app": crate::util::OLD_NAME, "version": VERSION, "pid": std::process::id() })),
             "/api/state" => app.state(),
             "/api/history" => app.history(),
             "/api/usage" => app.usage(),
@@ -704,7 +706,7 @@ fn handle(app: &App, mut request: Request) {
 }
 
 fn idle_limit() -> Option<Duration> {
-    if let Some(seconds) = std::env::var("CC_SESSIONS_IDLE_SECONDS").ok().and_then(|s| s.parse::<u64>().ok()) {
+    if let Some(seconds) = setting("IDLE_SECONDS").and_then(|s| s.to_str()?.parse::<u64>().ok()) {
         return (seconds > 0).then(|| Duration::from_secs(seconds));
     }
     let minutes = accounts::load_config().idle_minutes;
@@ -730,7 +732,7 @@ pub fn serve() -> Result<()> {
 
     fs::create_dir_all(state_dir())?;
     fs::write(pid_file(), format!("{}\n", std::process::id()))?;
-    eprintln!("{} cc-sessions {VERSION} listening on http://{HOST}:{port} (pid {})", log_stamp(), std::process::id());
+    eprintln!("{} paddock {VERSION} listening on http://{HOST}:{port} (pid {})", log_stamp(), std::process::id());
 
     let done = Arc::new(AtomicBool::new(false));
     let workers: Vec<_> = (0..WORKERS)
@@ -792,16 +794,16 @@ pub fn serve() -> Result<()> {
     if app.restart.load(Ordering::SeqCst) {
         // The listener is gone; the new program takes the port over.
         drop(server);
-        eprintln!("{} cc-sessions {VERSION} stopped; starting the new version", log_stamp());
+        eprintln!("{} paddock {VERSION} stopped; starting the new version", log_stamp());
         return start_detached(&os::installed_program());
     }
-    eprintln!("{} cc-sessions stopped ({reason})", log_stamp());
+    eprintln!("{} paddock stopped ({reason})", log_stamp());
     Ok(())
 }
 
 /// How long after starting the first update check waits, so starting stays quick.
 fn update_delay() -> Duration {
-    let seconds = std::env::var("CC_SESSIONS_UPDATE_DELAY").ok().and_then(|s| s.parse().ok()).unwrap_or(60);
+    let seconds = setting("UPDATE_DELAY").and_then(|s| s.to_str()?.parse().ok()).unwrap_or(60);
     Duration::from_secs(seconds)
 }
 

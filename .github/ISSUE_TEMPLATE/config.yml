@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Install or update instructions
-    url: https://github.com/barath-dev/cc-sessions#install
-    about: How to install cc-sessions, and how updates work.
+    url: https://github.com/barath-dev/paddock#install
+    about: How to install Paddock, and how updates work.

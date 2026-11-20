@@ -109,7 +109,7 @@ async function api(path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401) throw new Error('Open Claude Sessions from the terminal once, so this page has its key.');
+  if (response.status === 401) throw new Error('Open Paddock from the terminal once, so this page has its key.');
   if (!response.ok) throw new Error(data.error || `Request failed (${response.status}).`);
   return data;
 }
@@ -396,7 +396,7 @@ function render() {
   tree = buildTree(entries);
   if (S.place.kind === 'folder' && !tree.byId.has(S.place.id) && S.history) S.place = { kind: 'folder', id: '' };
   const waiting = S.data.sessions.filter((s) => s.open && (s.status === 'blocked' || (s.status === 'done' && Date.now() - (s.updatedAt || 0) < DAY))).length;
-  document.title = `${waiting ? `(${waiting}) ` : ''}${placeName()} — Claude Sessions`;
+  document.title = `${waiting ? `(${waiting}) ` : ''}${placeName()} — Paddock`;
   if (S.renaming) return;
   renderSidebar();
   renderToolbar();
@@ -1628,7 +1628,7 @@ window.addEventListener('cc-settings-closed', () => {
 });
 window.addEventListener('cc-stopped', () => {
   S.stopped = true;
-  $('#content').replaceChildren(h('p', { class: 'empty' }, 'Claude Sessions has stopped. Run it again from a terminal to come back here.'));
+  $('#content').replaceChildren(h('p', { class: 'empty' }, 'Paddock has stopped. Run it again from a terminal to come back here.'));
 });
 
 refresh().then(loadHistory);

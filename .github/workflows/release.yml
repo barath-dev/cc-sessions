@@ -17,13 +17,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-latest, target: aarch64-apple-darwin, asset: cc-sessions-macos-arm64 }
-          - { os: macos-latest, target: x86_64-apple-darwin, asset: cc-sessions-macos-x86_64 }
+          - { os: macos-latest, target: aarch64-apple-darwin, asset: paddock-macos-arm64 }
+          - { os: macos-latest, target: x86_64-apple-darwin, asset: paddock-macos-x86_64 }
           # Linux builds are statically linked (musl), so they run on any distribution.
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, asset: cc-sessions-linux-x86_64 }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: cc-sessions-linux-arm64 }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, asset: cc-sessions-windows-x86_64.exe }
-          - { os: windows-latest, target: aarch64-pc-windows-msvc, asset: cc-sessions-windows-arm64.exe }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, asset: paddock-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: paddock-linux-arm64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, asset: paddock-windows-x86_64.exe }
+          - { os: windows-latest, target: aarch64-pc-windows-msvc, asset: paddock-windows-arm64.exe }
     steps:
       - uses: actions/checkout@v4
       - run: rustup target add ${{ matrix.target }}
@@ -35,10 +35,10 @@ jobs:
           # No Visual C++ runtime needed on the PC that installs it.
           RUSTFLAGS: ${{ runner.os == 'Windows' && '-C target-feature=+crt-static' || '' }}
         run: |
-          cargo build --release --bin cc-sessions --target ${{ matrix.target }}
+          cargo build --release --bin paddock --target ${{ matrix.target }}
           mkdir out
           ext=""; [ "${{ runner.os }}" = "Windows" ] && ext=".exe"
-          cp "target/${{ matrix.target }}/release/cc-sessions$ext" "out/${{ matrix.asset }}"
+          cp "target/${{ matrix.target }}/release/paddock$ext" "out/${{ matrix.asset }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
@@ -54,8 +54,12 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # Installs from before the rename (cc-sessions 2.7 and older) update themselves by
+      # downloading cc-sessions-<system>, so each file is also published under that name.
+      - name: Copies under the old names
+        run: cd dist && for f in paddock-*; do cp "$f" "cc-sessions-${f#paddock-}"; done
       - name: Checksums
-        run: cd dist && sha256sum cc-sessions-* > checksums.txt && cat checksums.txt
+        run: cd dist && sha256sum paddock-* cc-sessions-* > checksums.txt && cat checksums.txt
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}

@@ -1,4 +1,9 @@
-# cc-sessions
+# Paddock
+
+**Every Claude Code and Codex session on your machine, in one place.**
+
+Paddock was called cc-sessions until 2.8. An install from before moves over by itself the
+first time the new version runs, and the `cc-sessions` command keeps working.
 
 One place to see, close and resume [Claude Code](https://claude.com/claude-code) and
 [Codex](https://github.com/openai/codex) sessions across every account on a machine, from
@@ -7,11 +12,11 @@ restores the accounts themselves.
 
 An account is a config folder of one of the two tools (`~/.claude`, `~/.claude-work`,
 `~/.codex`, `~/.codex-work`, ...) with a name and a shortcut command. Each tool only sees
-one account at a time; cc-sessions reads every account and shows the result together,
+one account at a time; Paddock reads every account and shows the result together,
 grouped by project folder, with the Usage view counting both.
 
 It is a single small program with nothing else to install, for macOS, Linux and Windows.
-It is an unofficial tool and is not affiliated with Anthropic.
+It is an unofficial tool and is not affiliated with Anthropic or OpenAI.
 
 ## See it
 
@@ -26,20 +31,20 @@ accounts. Both use made-up demo data.
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/barath-dev/cc-sessions/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/barath-dev/paddock/main/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/barath-dev/cc-sessions/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/barath-dev/paddock/main/install.ps1 | iex
 ```
 
 The installer downloads the program for your system, checks it against the release's
 SHA-256 list, and asks a few setup questions. Each has a default, so pressing Enter through
 them works:
 
-1. **Command name** — what you type to start it (default `cc-sessions`).
+1. **Command name** — what you type to start it (default `paddock`).
 2. **Port** for the page (default `4777`).
 3. **Clickable shortcut** in Applications or the Start menu (default yes).
 4. **Register the Claude Code folders it finds** as accounts (default yes).
@@ -47,11 +52,27 @@ them works:
    the one line it would add to your shell's startup file, and keeps a backup.
 6. **Keep it up to date automatically** (default yes). See [Updates](#updates).
 
-Run `cc-sessions setup` to change any answer later.
+Run `paddock setup` to change any answer later.
+
+### Coming from cc-sessions
+
+Nothing to do: an install of cc-sessions updates itself to Paddock, and the first time it
+runs it moves over by itself.
+
+- The settings folder moves from `~/.config/cc-sessions` to `~/.config/paddock`. A link is
+  left at the old path, so the line your shell's startup file already has keeps loading
+  the shortcuts. On Windows, `%APPDATA%\cc-sessions` becomes `%APPDATA%\paddock`.
+- `paddock` is added beside `cc-sessions`; both start the same program, which stays where
+  it was installed.
+- The app shortcut becomes Paddock, and fish's shortcut file `paddock.fish`.
+- `PADDOCK_HOME`, `PADDOCK_PORT` and the rest are read, and so are their old names,
+  `CC_SESSIONS_HOME` and so on.
+
+The install line still works with the old address, which GitHub sends on to the new one.
 
 ## Updates
 
-From 2.6.0 on, cc-sessions keeps itself up to date. Once a day the server asks GitHub for
+From 2.6.0 on, Paddock keeps itself up to date. Once a day the server asks GitHub for
 the latest release. When there is a newer one it downloads the program for your system,
 checks it against the release's SHA-256 list, puts it in place and restarts on it.
 Settings and sessions are not touched, and a close in progress finishes first.
@@ -60,8 +81,8 @@ After an update the page reloads and opens a **What's new** window (from 2.7.2):
 changes in every version since the one you had, newest first, with a link to all the
 release notes. It shows once per update; **Got it** or Esc closes it.
 
-- Turn it off in **Settings › General › Updates**, or answer no in `cc-sessions setup`.
-  With it off, the same place has **Update now**, and `cc-sessions update` installs the
+- Turn it off in **Settings › General › Updates**, or answer no in `paddock setup`.
+  With it off, the same place has **Update now**, and `paddock update` installs the
   latest version from a terminal (`--check` only looks).
 - **What's new** in the same place shows the last few versions' changes at any time.
 - Only the copy the installer put in place updates itself. A build from source is told
@@ -73,7 +94,7 @@ release notes. It shows once per update; **Got it** or Esc closes it.
 ## Reporting problems
 
 **Settings › General › Report a problem** (or the **Report** button on any error message,
-or `cc-sessions report`) opens a new GitHub issue filled in with the version, system,
+or `paddock report`) opens a new GitHub issue filled in with the version, system,
 Claude Code version, number of accounts and the last few error messages. It shows you all
 of it first, and leaves out folder paths, session names, prompts and emails. You describe
 what happened on GitHub before anything is sent. **Suggest a feature** is next to it.
@@ -81,8 +102,8 @@ what happened on GitHub before anything is sent. **Suggest a feature** is next t
 ## Start and stop
 
 ```
-cc-sessions          # start the server if needed and open the page
-cc-sessions stop     # stop the server (same as Disconnect in the page)
+paddock          # start the server if needed and open the page
+paddock stop     # stop the server (same as Disconnect in the page)
 ```
 
 The server runs in the background on `http://127.0.0.1:4777`, so the terminal can be
@@ -151,7 +172,7 @@ files in them, accounts as tags in the sidebar.
 ### Both layouts
 
 - **Rename** a session with the pencil on its row, by double-clicking its name, or with
-  Enter in the Finder layout. The name is kept by cc-sessions and shown in the page and on
+  Enter in the Finder layout. The name is kept by Paddock and shown in the page and on
   the command line; Claude Code and Codex keep their own titles. Clear the name to go back to that title.
 - **Settings**, from the classic header or the Finder sidebar:
   - **Appearance**: the layout; Light, Dark or Match system; a template (Mac, Classic,
@@ -199,19 +220,19 @@ they are deleted.
 ## Command line
 
 ```
-cc-sessions list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
-cc-sessions history [--folder PATH] [--account NAME] [--by-date] [--json]
-cc-sessions close <id>... | --folder PATH | --account NAME  [--yes]
-cc-sessions rename <id> NEW NAME | --reset
-cc-sessions account list [--removed]
-cc-sessions account add NAME [--tool claude|codex] [--alias A] [--dir PATH] [--no-login]
-cc-sessions account rename NAME NEW-NAME [--alias A]
-cc-sessions account login NAME
-cc-sessions account remove NAME [--yes]
-cc-sessions account restore NAME [--alias A]
-cc-sessions setup [--yes] [--command NAME] [--port N] [--shortcut | --no-shortcut] [--no-import] [--no-aliases] [--no-auto-update]
-cc-sessions update [--check]
-cc-sessions report
+paddock list [--folder PATH] [--account NAME] [--open | --closed | --all] [--json]
+paddock history [--folder PATH] [--account NAME] [--by-date] [--json]
+paddock close <id>... | --folder PATH | --account NAME  [--yes]
+paddock rename <id> NEW NAME | --reset
+paddock account list [--removed]
+paddock account add NAME [--tool claude|codex] [--alias A] [--dir PATH] [--no-login]
+paddock account rename NAME NEW-NAME [--alias A]
+paddock account login NAME
+paddock account remove NAME [--yes]
+paddock account restore NAME [--alias A]
+paddock setup [--yes] [--command NAME] [--port N] [--shortcut | --no-shortcut] [--no-import] [--no-aliases] [--no-auto-update]
+paddock update [--check]
+paddock report
 ```
 
 Session ids are shown as `account:id`. `close` asks before closing, asks separately for
@@ -228,8 +249,8 @@ time they were made, so conversations started together share their first charact
 
 | | macOS / Linux | Windows |
 |---|---|---|
-| Settings and records | `~/.config/cc-sessions` | `%APPDATA%\cc-sessions` |
-| Program | `~/.local/share/cc-sessions/cc-sessions` | `%LOCALAPPDATA%\cc-sessions\cc-sessions.exe` |
+| Settings and records | `~/.config/paddock` | `%APPDATA%\paddock` |
+| Program | `~/.local/share/paddock/paddock` (an install from before 2.8 keeps `~/.local/share/cc-sessions/cc-sessions`) | `%LOCALAPPDATA%\paddock\paddock.exe` (from before 2.8: `%LOCALAPPDATA%\cc-sessions\cc-sessions.exe`) |
 | Account shortcuts | aliases loaded by one line in `~/.zshrc` or `~/.bashrc` (fish: a `conf.d` file) | `claude-<name>.cmd` and `codex-<name>.cmd` launchers on your PATH |
 | Closing an interactive session | asks it to exit, and leaves it if it has not within 5 seconds | ends it immediately; Windows offers no gentler way |
 | Running Codex sessions | found from the running processes (`ps`, and `lsof` on macOS) | not found yet; saved Codex conversations are listed and can be resumed |
@@ -297,7 +318,7 @@ from `ui-token` on every API call, rejects requests whose `Host` is not
 
 ### Codex
 
-- Codex has no command that lists its running sessions. cc-sessions looks for running
+- Codex has no command that lists its running sessions. Paddock looks for running
   `codex` programs, leaving out its background service (`codex app-server`), its helpers
   (`codex-code-mode-host`, `codex-exec-server`) and commands like `codex login`. Since
   Codex 0.160 a session's turns run in that background service, which writes the
@@ -344,13 +365,13 @@ from `ui-token` on every API call, rejects requests whose `Host` is not
 ## Building from source
 
 ```sh
-cargo build --release      # target/release/cc-sessions
+cargo build --release      # target/release/paddock
 cargo test                 # unit tests, and end-to-end tests against a fake claude (and codex)
 ```
 
 Everything that differs between systems is in `src/os/`. The page is in `ui/` and is built
-into the program; set `CC_SESSIONS_UI_DIR=ui` to serve it from disk while working on it.
-`CC_SESSIONS_HOME` and `CC_SESSIONS_PORT` point a run at a different settings folder and
+into the program; set `PADDOCK_UI_DIR=ui` to serve it from disk while working on it.
+`PADDOCK_HOME` and `PADDOCK_PORT` (or their old names, `CC_SESSIONS_…`) point a run at a different settings folder and
 port.
 
 Each release adds its notes to the top of `ui/changes.json` (version, date, title, notes),
